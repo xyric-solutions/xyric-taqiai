@@ -1,0 +1,40 @@
+{
+  "name": "ai-legal-system",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "cross-env NODE_OPTIONS=--max-old-space-size=4096 next dev --hostname 0.0.0.0",
+    "dev:webpack": "cross-env NODE_OPTIONS=--max-old-space-size=4096 next dev --webpack",
+    "build": "cross-env NODE_OPTIONS=--max-old-space-size=4096 next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "^6.19.3",
+    "@types/dompurify": "^3.0.5",
+    "bcryptjs": "^3.0.3",
+    "dompurify": "^3.4.3",
+    "html2pdf.js": "^0.10.3",
+    "jose": "^6.2.2",
+    "lucide-react": "^1.8.0",
+    "next": "16.2.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/compat": "^2.1.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "cross-env": "^10.1.0",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.3",
+    "prisma": "^6.19.3",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

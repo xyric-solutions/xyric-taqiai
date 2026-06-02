@@ -1,0 +1,158 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  barCouncilId String?
+  phone        String?
+  city         String?
+  language     String   @default("en")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  documents      Document[]
+  chatSessions   ChatSession[]
+  matters        Matter[]
+  diaryEntries   DiaryEntry[]
+  savedJudgments SavedJudgment[]
+  legalCases     LegalCase[]
+}
+
+model Document {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  title            String
+  category         String
+  subType          String
+  language         String   @default("en")
+  status           String   @default("draft")
+  formData         String
+  generatedContent String
+  deletedAt        DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([userId, category])
+  @@index([userId, createdAt])
+}
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ChatMessage[]
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String
+  content   String
+  createdAt DateTime    @default(now())
+}
+
+model Matter {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  title       String
+  caseNo      String?
+  court       String
+  caseType    String
+  status      String   @default("active")
+  role        String
+  clientName  String
+  clientCnic  String?
+  opponentName String?
+  judgeName   String?
+  dateFiled   DateTime?
+  nextHearing DateTime?
+  notes       String?
+  archived    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  hearings MatterHearing[]
+
+  @@index([userId, status])
+  @@index([userId, nextHearing])
+}
+
+model MatterHearing {
+  id        String   @id @default(cuid())
+  matterId  String
+  matter    Matter   @relation(fields: [matterId], references: [id], onDelete: Cascade)
+  date      DateTime
+  purpose   String?
+  result    String?
+  nextDate  DateTime?
+  createdAt DateTime @default(now())
+}
+
+model DiaryEntry {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  caseNumber  String?
+  lastDate    DateTime?
+  title       String
+  courtName   String
+  stage       String
+  proceeding  String?
+  nextDate    DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, nextDate])
+}
+
+model SavedJudgment {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  citation    String
+  title       String?
+  court       String?
+  year        String?
+  summary     String?
+  content     String?
+  tags        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model LegalCase {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  name            String
+  status          String    @default("in-progress")
+  courtName       String?
+  nextHearingDate DateTime?
+  clientName      String?
+  clientCnic      String?
+  clientPhone     String?
+  documentIds     String    @default("[]")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, nextHearingDate])
+}
