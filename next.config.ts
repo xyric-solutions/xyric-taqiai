@@ -4,6 +4,11 @@ const nextConfig: NextConfig = {
   experimental: {
     workerThreads: false,
   },
+  // Next 16 defaults to Turbopack and refuses to build when a `webpack` key
+  // exists without a matching `turbopack` key. The webpack callback below is
+  // dev-only file-watching (used by `npm run dev:webpack`); an empty turbopack
+  // config satisfies the requirement without changing build behaviour.
+  turbopack: {},
   // Stop the dev server from watching any database file.
   //  - data/judgments.db (+ -wal/-shm) and data/shc_pdfs churn during imports.
   //  - prisma/dev.db (+ -journal/-wal/-shm) is written on EVERY chat message
