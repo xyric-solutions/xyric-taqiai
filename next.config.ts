@@ -1,42 +1,46 @@
 import type { NextConfig } from "next";
 
+// Dev-only webpack file-watcher tuning. Stops the dev server (`npm run
+// dev:webpack`) from watching database files:
+//  - data/judgments.db (+ -wal/-shm) and data/shc_pdfs churn during imports.
+//  - prisma/dev.db (+ -journal/-wal/-shm) is written on EVERY chat message
+//    (persistMessage in the AI Advisor). Without ignoring it, each send made
+//    the dev server recompile — the "white window" that flashed on every search.
+// All these DBs are read/written at runtime via their own connections (Prisma /
+// node:sqlite), never through the webpack module graph, so ignoring them from
+// the file-watcher changes nothing about how the app reads/writes them.
+//
+// IMPORTANT: this key is included ONLY in development. Next 16 builds with
+// Turbopack and errors when a `webpack` config exists; keeping it out of the
+// production build entirely (not just adding `turbopack: {}`) avoids that.
+const isDev = process.env.NODE_ENV === "development";
+
+const devWebpack: NextConfig["webpack"] = (config, { dev }) => {
+  if (dev) {
+    config.watchOptions = {
+      ...(config.watchOptions || {}),
+      ignored: [
+        "**/.git/**",
+        "**/.next/**",
+        "**/node_modules/**",
+        "**/data/**",
+        "**/prisma/**",
+        "**/*.db",
+        "**/*.db-journal",
+        "**/*.db-wal",
+        "**/*.db-shm",
+      ],
+    };
+  }
+  return config;
+};
+
 const nextConfig: NextConfig = {
   experimental: {
     workerThreads: false,
   },
-  // Next 16 defaults to Turbopack and refuses to build when a `webpack` key
-  // exists without a matching `turbopack` key. The webpack callback below is
-  // dev-only file-watching (used by `npm run dev:webpack`); an empty turbopack
-  // config satisfies the requirement without changing build behaviour.
   turbopack: {},
-  // Stop the dev server from watching any database file.
-  //  - data/judgments.db (+ -wal/-shm) and data/shc_pdfs churn during imports.
-  //  - prisma/dev.db (+ -journal/-wal/-shm) is written on EVERY chat message
-  //    (persistMessage in the AI Advisor). Without ignoring it, each send made
-  //    the dev server recompile and spawn a worker process — the "white window"
-  //    that flashed on every search.
-  // All these DBs are accessed at runtime via their own connections (Prisma /
-  // node:sqlite), never through the webpack module graph, so ignoring them from
-  // the file-watcher changes nothing about how the app reads/writes them.
-  webpack: (config, { dev }) => {
-    if (dev) {
-      config.watchOptions = {
-        ...(config.watchOptions || {}),
-        ignored: [
-          "**/.git/**",
-          "**/.next/**",
-          "**/node_modules/**",
-          "**/data/**",
-          "**/prisma/**",
-          "**/*.db",
-          "**/*.db-journal",
-          "**/*.db-wal",
-          "**/*.db-shm",
-        ],
-      };
-    }
-    return config;
-  },
+  ...(isDev ? { webpack: devWebpack } : {}),
   async headers() {
     return [
       {
