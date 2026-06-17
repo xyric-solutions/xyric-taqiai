@@ -9,6 +9,15 @@ import Link from "next/link";
 
 type ApprovalStatus = "pending" | "approved" | "rejected" | "edited";
 
+interface GroundingSource {
+  id: number;
+  citation: string;
+  court: string;
+  year: number;
+  title: string | null;
+  reported: boolean;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -19,6 +28,8 @@ interface Message {
   isUncertain?: boolean;
   // S04-07: saved as note
   savedAsNote?: boolean;
+  // verified judgments retrieved from the corpus that grounded this answer
+  sources?: GroundingSource[];
 }
 
 interface ApiChatSession {
@@ -42,15 +53,25 @@ export default function AIAdvisorPage() {
   const [uploadedImageName, setUploadedImageName] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
 
+  // Keep the view pinned to the latest message, but smoothly:
+  //  - use "auto" (instant) while streaming so per-token "smooth" animations
+  //    don't pile up and stutter; "smooth" only when a turn finishes.
+  //  - don't yank the user down if they've scrolled up to read history.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const c = scrollContainerRef.current;
+    if (!c) return;
+    const nearBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 140;
+    if (nearBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: loading ? "auto" : "smooth" });
+    }
+  }, [messages, loading]);
 
   // Load most recent session or create a new one
   useEffect(() => {
@@ -234,6 +255,10 @@ export default function AIAdvisorPage() {
     setLoading(true);
 
     const intentPrompt = getIntentSystemPrompt(currentInput);
+    const compactHistory = messages.slice(-8).map((msg) => ({
+      role: msg.role,
+      content: msg.content.slice(0, 1200),
+    }));
 
     try {
       const res = await fetch("/api/ai/advisor", {
@@ -243,16 +268,65 @@ export default function AIAdvisorPage() {
           message: intentPrompt
             ? `${intentPrompt}\n\nUSER QUESTION: ${userMessage.content}`
             : userMessage.content,
-          history: messages,
+          history: compactHistory,
           image: currentImage || undefined,
         }),
       });
 
-      if (!res.ok) throw new Error("Failed to get response");
-      const data = await res.json();
-      const uncertain = isUncertainResponse(data.response);
-      setMessages((prev) => [...prev, { role: "assistant", content: data.response, approval: "pending", isUncertain: uncertain }]);
-      void persistMessage("assistant", data.response);
+      if (!res.ok || !res.body) throw new Error("Failed to get response");
+
+      // Add an empty assistant message that we fill as the stream arrives.
+      // It is always the last message, so we patch it by last index.
+      setMessages((prev) => [...prev, { role: "assistant", content: "", approval: "pending", isUncertain: false, sources: [] }]);
+      const updateLast = (patch: Partial<Message>) =>
+        setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? { ...m, ...patch } : m)));
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let full = "";
+      let streamError = "";
+
+      // Coalesce token updates to one render per animation frame for smoothness.
+      let rafId = 0;
+      const flush = () => {
+        rafId = 0;
+        updateLast({ content: full });
+      };
+      const scheduleFlush = () => {
+        if (rafId === 0) rafId = requestAnimationFrame(flush);
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          let evt: { type: string; text?: string; error?: string; sources?: GroundingSource[] };
+          try {
+            evt = JSON.parse(trimmed);
+          } catch {
+            continue;
+          }
+          if (evt.type === "delta" && evt.text) {
+            full += evt.text;
+            scheduleFlush();
+          } else if (evt.type === "done") {
+            updateLast({ sources: Array.isArray(evt.sources) ? evt.sources : [] });
+          } else if (evt.type === "error") {
+            streamError = evt.error || "AI response failed.";
+          }
+        }
+      }
+
+      if (rafId !== 0) cancelAnimationFrame(rafId);
+      const finalText = full || streamError || "Sorry, I encountered an error. Please try again.";
+      updateLast({ content: finalText, isUncertain: isUncertainResponse(finalText) });
+      void persistMessage("assistant", finalText);
     } catch {
       const errorMsg = "Sorry, I encountered an error. Please try again.";
       setMessages((prev) => [...prev, { role: "assistant", content: errorMsg }]);
@@ -369,7 +443,7 @@ export default function AIAdvisorPage() {
         {/* ===== CHAT PANEL ===== */}
         <Card className="flex-1 flex flex-col overflow-hidden min-h-[300px] sm:min-h-[400px]">
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
             {messages.length === 0 ? (
               <div className="text-center py-8 sm:py-12">
                 <div className="relative w-16 h-16 mx-auto mb-4 grid place-items-center">
@@ -465,6 +539,32 @@ export default function AIAdvisorPage() {
                     </div>
                   )}
 
+                  {/* Verified judgments from the corpus that grounded this answer */}
+                  {msg.role === "assistant" && editingIndex !== i && msg.sources && msg.sources.length > 0 && (
+                    <div className="max-w-[85%] sm:max-w-[75%] mt-1.5 p-2.5 rounded-xl" style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)" }}>
+                      <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1" style={{ color: "var(--text-tertiary)" }}>
+                        <BookOpen className="h-3 w-3 text-success-500" /> Verified from your archive
+                      </p>
+                      <div className="flex flex-col gap-1">
+                        {msg.sources.map((s) => (
+                          <Link
+                            key={s.id}
+                            href={`/case-law?q=${encodeURIComponent(s.citation)}&mode=${s.reported ? "citation" : "keyword"}`}
+                            className="group flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] transition-all hover:border-success-500/40"
+                            style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)" }}
+                          >
+                            <span className="flex-shrink-0">⚖️</span>
+                            <span className="font-bold font-mono text-success-500">{s.citation}</span>
+                            <span className="truncate" style={{ color: "var(--text-tertiary)" }}>
+                              {s.title ? `· ${s.title}` : ""} · {s.court}{s.year ? ` ${s.year}` : ""}
+                            </span>
+                            <ChevronRight className="h-3 w-3 ml-auto flex-shrink-0 opacity-0 group-hover:opacity-100" style={{ color: "var(--text-tertiary)" }} />
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* S04-08: Mandatory disclaimer on every AI response */}
                   {msg.role === "assistant" && editingIndex !== i && (
                     <div className="max-w-[85%] sm:max-w-[75%] mt-1 flex items-start gap-1.5 px-2 py-1.5 bg-warning-500/10 border border-warning-500/25 rounded-xl">
@@ -532,7 +632,7 @@ export default function AIAdvisorPage() {
                 </div>
               ))
             )}
-            {loading && (
+            {loading && (messages.length === 0 || messages[messages.length - 1]?.role === "user" || !messages[messages.length - 1]?.content) && (
               <div className="flex justify-start">
                 <div className="rounded-2xl rounded-bl-md px-4 py-3 border" style={{ background: "var(--bg-surface-2)", borderColor: "var(--border-subtle)" }}>
                   <div className="flex gap-1.5">

@@ -8,7 +8,7 @@ import {
   HeartHandshake, ShieldAlert, Building2, Scale, Briefcase,
   Calculator, Globe, Landmark, Users, Folder, Gavel,
   LayoutDashboard, Calendar, Languages, Settings,
-  ChevronDown, X, ScrollText, LogOut,
+  ChevronDown, X, ScrollText, LogOut, ScanLine, Mic, Layers,
 } from "lucide-react";
 import { useSidebarCollapsed, setSidebarCollapsed } from "@/lib/sidebar-store";
 
@@ -19,10 +19,13 @@ const mainItems = [
 
 const researchItems = [
   { name: "Judgments",      href: "/case-law",       icon: ScrollText },
+  { name: "Case Builder",   href: "/case-builder",   icon: Layers, badge: "AI" },
   { name: "Statute Search", href: "/statute-search", icon: Library    },
 ];
 
 const draftItems = [
+  { name: "Voice Case",      href: "/voice-case",         icon: Mic           },
+  { name: "Copy from Photo", href: "/copy-from-photo",    icon: ScanLine      },
   { name: "Affidavits",      href: "/affidavits",        icon: PenLine       },
   { name: "Agreements",      href: "/agreements",         icon: Handshake     },
   { name: "Applications",    href: "/applications",       icon: FilePlus      },

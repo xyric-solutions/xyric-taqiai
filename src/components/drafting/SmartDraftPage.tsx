@@ -6,6 +6,7 @@ import DocumentPreview from "@/components/documents/DocumentPreview";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import LoadingSpinner from "@/components/ui/LoadingSpinner";
+import AutoGrowTextarea from "@/components/ui/AutoGrowTextarea";
 import {
   Sparkles, ArrowLeft, ArrowRight, Paperclip, X,
   Image as ImageIcon, FileText as FileIcon, RefreshCw, Send,
@@ -135,6 +136,10 @@ export default function SmartDraftPage({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestionIdx, setSuggestionIdx] = useState(-1);
   const [debouncedRequest, setDebouncedRequest] = useState("");
+  // After a suggestion is picked, suppress the dropdown until the user types again
+  const justSelectedRef = useRef(false);
+  // Whether the draft box is currently focused — empty-input browsing only opens on focus
+  const inputFocusedRef = useRef(false);
 
   // ── Voice input state ──
   const [voiceTarget, setVoiceTarget] = useState<string | null>(null);
@@ -222,25 +227,46 @@ export default function SmartDraftPage({
     );
   };
 
-  // ── Autocomplete debounce ──
+  // ── Prefill from global search (?draft=<document name>) ──
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedRequest(userRequest), 300);
+    const draft = new URLSearchParams(window.location.search).get("draft");
+    if (draft) {
+      justSelectedRef.current = true; // it's a chosen document, don't pop the dropdown
+      setUserRequest(draft);
+    }
+  }, []);
+
+  // ── Autocomplete debounce ──
+  // Suggestions are a local in-memory filter, so keep the delay tiny for instant feel
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedRequest(userRequest), 60);
     return () => clearTimeout(timer);
   }, [userRequest]);
 
   useEffect(() => {
+    // Don't re-open the dropdown right after the user picked a suggestion
+    if (justSelectedRef.current) {
+      justSelectedRef.current = false;
+      return;
+    }
     const matches = getDocSuggestions(debouncedRequest, category);
     setSuggestions(matches);
-    setShowSuggestions(matches.length > 0);
+    // Empty-input browsing should only pop open while the box is focused — never on mount
+    const hasQuery = debouncedRequest.trim().length >= 2;
+    setShowSuggestions(matches.length > 0 && (hasQuery || inputFocusedRef.current));
     setSuggestionIdx(-1);
   }, [debouncedRequest, category]);
 
   const handleRequestChange = useCallback((val: string) => {
+    // Real typing always re-enables suggestions
+    justSelectedRef.current = false;
     setUserRequest(val);
   }, []);
 
   const selectSuggestion = (doc: typeof DOCUMENT_SUGGESTIONS[0]) => {
+    justSelectedRef.current = true;
     setUserRequest(doc.label);
+    setDebouncedRequest(doc.label);
     setSuggestions([]);
     setShowSuggestions(false);
     setSuggestionIdx(-1);
@@ -576,12 +602,12 @@ export default function SmartDraftPage({
                 </div>
 
                 {isDetail ? (
-                  <textarea
-                    rows={4}
+                  <AutoGrowTextarea
+                    minRows={4}
                     placeholder={q.placeholder}
                     value={answers[q.id] || ""}
                     onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                    className={`${inputCls} resize-y leading-relaxed`}
+                    className={`${inputCls} leading-relaxed`}
                   />
                 ) : (
                   <input
@@ -782,15 +808,28 @@ export default function SmartDraftPage({
               if (showSuggestions && e.key === "Enter" && suggestionIdx >= 0) { e.preventDefault(); selectSuggestion(suggestions[suggestionIdx]); return; }
               if (e.key === "Enter" && e.ctrlKey) void handleAnalyze();
             }}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            onFocus={() => {
+              // Clicking into the box shows the full category list for easy browsing
+              justSelectedRef.current = false;
+              inputFocusedRef.current = true;
+              const matches = getDocSuggestions(userRequest, category);
+              setSuggestions(matches);
+              setShowSuggestions(matches.length > 0);
+              setSuggestionIdx(-1);
+            }}
+            onBlur={() => {
+              inputFocusedRef.current = false;
+              setTimeout(() => setShowSuggestions(false), 150);
+            }}
           />
 
           {/* Autocomplete Dropdown */}
           {showSuggestions && suggestions.length > 0 && (
             <div className="absolute left-0 right-0 bg-[var(--bg-surface-2)] border border-[var(--border-default)] rounded-xl shadow-xl z-50 overflow-hidden">
-              <p className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider px-4 py-2 border-b border-[var(--border-default)] bg-[var(--bg-surface-2)]">
+              <p className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider px-4 py-2 border-b border-[var(--border-default)] bg-[var(--bg-surface-2)] sticky top-0">
                 Document Suggestions — click to select
               </p>
+              <div className="max-h-72 overflow-y-auto">
               {suggestions.map((doc, i) => (
                 <button
                   key={doc.label}
@@ -807,6 +846,7 @@ export default function SmartDraftPage({
                   {doc.label}
                 </button>
               ))}
+              </div>
             </div>
           )}
 

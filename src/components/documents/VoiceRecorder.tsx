@@ -1,14 +1,15 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Mic, Square, Trash2, Loader2, User, Briefcase, Check } from "lucide-react";
+import { Mic, Square, Trash2, Loader2, Check, Upload, FileAudio } from "lucide-react";
 
 interface VoiceRecording {
   id: string;
-  speaker: "client" | "lawyer";
   audioBlob: Blob;
   audioUrl: string;
   duration: number;
+  source: "mic" | "upload";
+  fileName?: string;
   transcription?: string;
   isTranscribing?: boolean;
 }
@@ -20,7 +21,6 @@ interface VoiceRecorderProps {
 export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderProps) {
   const [recordings, setRecordings] = useState<VoiceRecording[]>([]);
   const [isRecording, setIsRecording] = useState(false);
-  const [currentSpeaker, setCurrentSpeaker] = useState<"client" | "lawyer">("client");
   const [recordingTime, setRecordingTime] = useState(0);
   const [error, setError] = useState("");
 
@@ -29,6 +29,7 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number>(0);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     return () => {
@@ -43,10 +44,7 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
   useEffect(() => {
     const combined = recordings
       .filter((r) => r.transcription)
-      .map((r) => {
-        const label = r.speaker === "lawyer" ? "LAWYER" : "CLIENT";
-        return `[${label}]: ${r.transcription}`;
-      })
+      .map((r) => r.transcription)
       .join("\n\n");
     onTranscriptionsReady(combined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -73,18 +71,15 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
 
         const recording: VoiceRecording = {
           id: Math.random().toString(36).slice(2),
-          speaker: currentSpeaker,
           audioBlob,
           audioUrl,
           duration,
+          source: "mic",
         };
 
         setRecordings((prev) => [...prev, recording]);
-
-        // Auto-transcribe
         transcribeRecording(recording);
 
-        // Cleanup
         stream.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
       };
@@ -114,6 +109,44 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
     }
   };
 
+  const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("audio/")) {
+      setError("Only audio files are supported (MP3, M4A, WAV, WebM, OGG)");
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      setError("Audio file must be under 25MB");
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+      return;
+    }
+
+    setError("");
+    const audioUrl = URL.createObjectURL(file);
+    const recording: VoiceRecording = {
+      id: Math.random().toString(36).slice(2),
+      audioBlob: file,
+      audioUrl,
+      duration: 0,
+      source: "upload",
+      fileName: file.name,
+    };
+
+    // Read duration from metadata (best-effort)
+    const probe = new Audio(audioUrl);
+    probe.onloadedmetadata = () => {
+      const d = isFinite(probe.duration) ? probe.duration : 0;
+      setRecordings((prev) => prev.map((r) => (r.id === recording.id ? { ...r, duration: d } : r)));
+    };
+
+    setRecordings((prev) => [...prev, recording]);
+    transcribeRecording(recording);
+    if (uploadInputRef.current) uploadInputRef.current.value = "";
+  };
+
   const transcribeRecording = async (recording: VoiceRecording) => {
     setRecordings((prev) =>
       prev.map((r) => (r.id === recording.id ? { ...r, isTranscribing: true } : r))
@@ -121,8 +154,7 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
 
     try {
       const formData = new FormData();
-      formData.append("audio", recording.audioBlob, "recording.webm");
-      formData.append("speaker", recording.speaker);
+      formData.append("audio", recording.audioBlob, recording.fileName || "recording.webm");
 
       const res = await fetch("/api/ai/voice-transcribe", {
         method: "POST",
@@ -161,82 +193,74 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <label className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+        <label className="text-sm font-medium text-[var(--text-secondary)] flex items-center gap-1.5">
           <Mic className="h-3.5 w-3.5" />
           Voice Recording / آواز ریکارڈنگ
           {recordings.length > 0 && (
-            <span className="text-xs bg-primary-100 text-primary-600 px-2 py-0.5 rounded-full">
+            <span className="text-xs bg-primary-500/15 text-primary-400 px-2 py-0.5 rounded-full">
               {recordings.length}
             </span>
           )}
         </label>
       </div>
 
-      {/* Speaker Toggle */}
-      {!isRecording && (
-        <div className="flex bg-slate-100 rounded-xl p-1 w-full">
-          <button
-            type="button"
-            onClick={() => setCurrentSpeaker("client")}
-            className={`flex items-center justify-center gap-2 flex-1 px-4 py-2 rounded-lg text-sm font-medium ${
-              currentSpeaker === "client" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
-            }`}
-          >
-            <User className="h-4 w-4" />
-            Client / موکل
-          </button>
-          <button
-            type="button"
-            onClick={() => setCurrentSpeaker("lawyer")}
-            className={`flex items-center justify-center gap-2 flex-1 px-4 py-2 rounded-lg text-sm font-medium ${
-              currentSpeaker === "lawyer" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
-            }`}
-          >
-            <Briefcase className="h-4 w-4" />
-            Lawyer / وکیل
-          </button>
-        </div>
-      )}
-
-      {/* Recording Button */}
+      {/* Record / Upload */}
       {isRecording ? (
-        <div className="p-4 bg-red-50 border-2 border-red-200 rounded-xl">
+        <div className="p-4 bg-danger-500/10 border-2 border-danger-500/30 rounded-xl">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="relative">
-                <div className="w-10 h-10 rounded-full bg-red-500 flex items-center justify-center animate-pulse">
+                <div className="w-10 h-10 rounded-full bg-danger-500 flex items-center justify-center animate-pulse">
                   <Mic className="h-5 w-5 text-white" />
                 </div>
-                <span className="absolute inset-0 rounded-full bg-red-500 animate-ping opacity-30" />
+                <span className="absolute inset-0 rounded-full bg-danger-500 animate-ping opacity-30" />
               </div>
               <div>
-                <p className="text-sm font-semibold text-red-700">Recording {currentSpeaker === "lawyer" ? "Lawyer" : "Client"}...</p>
-                <p className="text-xs text-red-600 font-mono">{formatTime(recordingTime)}</p>
+                <p className="text-sm font-semibold text-danger-500">Recording discussion...</p>
+                <p className="text-xs text-danger-500 font-mono">{formatTime(recordingTime)}</p>
               </div>
             </div>
             <button
               type="button"
               onClick={stopRecording}
-              className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium text-sm"
+              className="flex items-center gap-2 px-4 py-2 bg-danger-500 text-white rounded-lg hover:bg-danger-500/80 font-medium text-sm transition-colors"
             >
               <Square className="h-4 w-4" /> Stop
             </button>
           </div>
         </div>
       ) : (
-        <button
-          type="button"
-          onClick={startRecording}
-          className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-slate-300 rounded-xl text-sm font-medium text-slate-600 hover:border-primary-400 hover:bg-primary-50/50 hover:text-primary-600"
-        >
-          <Mic className="h-4 w-4" />
-          Start Recording ({currentSpeaker === "lawyer" ? "Lawyer" : "Client"}) / ریکارڈنگ شروع کریں
-        </button>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={startRecording}
+            className="flex items-center justify-center gap-2 py-3 border-2 border-dashed border-[var(--border-default)] rounded-xl text-sm font-medium text-[var(--text-secondary)] hover:border-primary-500 hover:bg-primary-500/5 hover:text-primary-400 transition-colors"
+          >
+            <Mic className="h-4 w-4" />
+            Record Discussion
+          </button>
+          <button
+            type="button"
+            onClick={() => uploadInputRef.current?.click()}
+            className="flex items-center justify-center gap-2 py-3 border-2 border-dashed border-[var(--border-default)] rounded-xl text-sm font-medium text-[var(--text-secondary)] hover:border-primary-500 hover:bg-primary-500/5 hover:text-primary-400 transition-colors"
+          >
+            <Upload className="h-4 w-4" />
+            Upload Audio File
+          </button>
+        </div>
       )}
+
+      <input
+        ref={uploadInputRef}
+        type="file"
+        accept="audio/*"
+        onChange={handleAudioUpload}
+        className="hidden"
+      />
 
       {/* Error */}
       {error && (
-        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">
+        <div className="text-xs text-danger-500 bg-danger-500/10 border border-danger-500/30 rounded-lg p-2.5">
           {error}
         </div>
       )}
@@ -244,23 +268,20 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
       {/* Recordings List */}
       {recordings.length > 0 && (
         <div className="space-y-2">
-          {recordings.map((rec) => (
-            <div key={rec.id} className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+          {recordings.map((rec, idx) => (
+            <div key={rec.id} className="p-3 rounded-xl bg-[var(--bg-surface-2)] border border-[var(--border-default)]">
               <div className="flex items-center gap-3">
-                {/* Speaker icon */}
-                <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                  rec.speaker === "lawyer" ? "bg-purple-100 text-purple-600" : "bg-blue-100 text-blue-600"
-                }`}>
-                  {rec.speaker === "lawyer" ? <Briefcase className="h-5 w-5" /> : <User className="h-5 w-5" />}
+                <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 bg-primary-500/15 text-primary-400">
+                  {rec.source === "upload" ? <FileAudio className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
                 </div>
 
                 {/* Audio player */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-semibold text-slate-700">
-                      {rec.speaker === "lawyer" ? "Lawyer / وکیل" : "Client / موکل"}
+                    <span className="text-xs font-semibold text-[var(--text-secondary)] truncate">
+                      {rec.source === "upload" ? (rec.fileName || "Audio file") : `Recording ${idx + 1}`}
                     </span>
-                    <span className="text-[10px] text-slate-500">{formatTime(rec.duration)}</span>
+                    <span className="text-[10px] text-[var(--text-tertiary)] flex-shrink-0 ml-2">{rec.duration ? formatTime(rec.duration) : ""}</span>
                   </div>
                   <audio controls src={rec.audioUrl} className="w-full h-8" style={{ maxWidth: "100%" }} />
                 </div>
@@ -268,7 +289,7 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
                 <button
                   type="button"
                   onClick={() => deleteRecording(rec.id)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 flex-shrink-0"
+                  className="p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-danger-500 hover:bg-danger-500/10 flex-shrink-0 transition-colors"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -276,15 +297,15 @@ export default function VoiceRecorder({ onTranscriptionsReady }: VoiceRecorderPr
 
               {/* Transcription */}
               {rec.isTranscribing ? (
-                <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                <div className="mt-2 flex items-center gap-2 text-xs text-[var(--text-tertiary)]">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   AI transcribing voice...
                 </div>
               ) : rec.transcription ? (
-                <div className="mt-2 p-2.5 bg-white border border-slate-200 rounded-lg">
+                <div className="mt-2 p-2.5 bg-[var(--bg-surface-1)] border border-[var(--border-default)] rounded-lg">
                   <div className="flex items-start gap-1.5">
-                    <Check className="h-3.5 w-3.5 text-green-500 flex-shrink-0 mt-0.5" />
-                    <p className="text-xs text-slate-700 leading-relaxed">{rec.transcription}</p>
+                    <Check className="h-3.5 w-3.5 text-success-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{rec.transcription}</p>
                   </div>
                 </div>
               ) : null}

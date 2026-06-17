@@ -81,11 +81,11 @@ export default function ImageUploadTyping({ onResult, language = "en" }: ImageUp
           <img
             src={imagePreview}
             alt="Document"
-            className="w-full max-h-[300px] object-contain rounded-xl border border-slate-200 bg-slate-50"
+            className="w-full max-h-[300px] object-contain rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-2)]"
           />
           <button
             onClick={removeImage}
-            className="absolute top-2 right-2 p-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600 shadow-lg"
+            className="absolute top-2 right-2 p-1.5 rounded-lg bg-danger-500 text-white hover:bg-danger-500/80 shadow-lg"
           >
             <X className="h-4 w-4" />
           </button>
@@ -97,18 +97,18 @@ export default function ImageUploadTyping({ onResult, language = "en" }: ImageUp
       ) : (
         <div
           onClick={() => fileInputRef.current?.click()}
-          className="border-2 border-dashed border-slate-300 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer hover:border-primary-400 hover:bg-primary-50/30 group"
+          className="border-2 border-dashed border-[var(--border-default)] rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer hover:border-primary-500 hover:bg-primary-500/5 transition-colors group"
         >
-          <div className="p-3 rounded-2xl bg-slate-100 group-hover:bg-primary-100 mb-3">
-            <Camera className="h-7 w-7 text-slate-400 group-hover:text-primary-500" />
+          <div className="p-3 rounded-2xl bg-[var(--bg-surface-3)] group-hover:bg-primary-500/15 transition-colors mb-3">
+            <Camera className="h-7 w-7 text-[var(--text-tertiary)] group-hover:text-primary-400 transition-colors" />
           </div>
-          <p className="text-sm font-semibold text-slate-600">Upload document image</p>
-          <p className="text-xs text-slate-400 mt-1">AI will type the same document for you</p>
-          <p className="text-xs text-slate-400 mt-2" dir="rtl">دستاویز کی تصویر اپلوڈ کریں - AI ٹائپ کر دے گا</p>
+          <p className="text-sm font-semibold text-[var(--text-secondary)]">Upload document image</p>
+          <p className="text-xs text-[var(--text-tertiary)] mt-1">AI will type the same document for you</p>
+          <p className="text-xs text-[var(--text-tertiary)] mt-2" dir="rtl">دستاویز کی تصویر اپلوڈ کریں - AI ٹائپ کر دے گا</p>
           <div className="flex gap-2 mt-3">
-            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-500 rounded-full">JPG</span>
-            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-500 rounded-full">PNG</span>
-            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-500 rounded-full">Max 10MB</span>
+            <span className="px-2 py-0.5 text-[10px] bg-[var(--bg-surface-3)] text-[var(--text-tertiary)] rounded-full">JPG</span>
+            <span className="px-2 py-0.5 text-[10px] bg-[var(--bg-surface-3)] text-[var(--text-tertiary)] rounded-full">PNG</span>
+            <span className="px-2 py-0.5 text-[10px] bg-[var(--bg-surface-3)] text-[var(--text-tertiary)] rounded-full">Max 10MB</span>
           </div>
         </div>
       )}
@@ -116,16 +116,16 @@ export default function ImageUploadTyping({ onResult, language = "en" }: ImageUp
       <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700 flex items-center justify-between">
+        <div className="bg-danger-500/10 border border-danger-500/30 rounded-xl p-3 text-sm text-danger-500 flex items-center justify-between">
           <span>{error}</span>
-          <button onClick={() => setError("")}><X className="h-4 w-4 text-red-400" /></button>
+          <button onClick={() => setError("")}><X className="h-4 w-4 text-danger-500" /></button>
         </div>
       )}
 
       {imageFile && (
         <Button onClick={handleExtract} loading={loading} className="w-full" size="lg">
           <Upload className="h-4 w-4" />
-          {loading ? "AI document type kar raha hai..." : "AI se Type Karwayein"}
+          {loading ? "AI is typing the document..." : "Type with AI"}
         </Button>
       )}
     </div>

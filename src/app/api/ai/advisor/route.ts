@@ -1,10 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildAIPrompt } from "@/lib/intent-handlers";
+import { buildAIPrompt, buildLanguageRule } from "@/lib/intent-handlers";
 import { detectIntent } from "@/lib/intent-detection";
-import { geminiGenerate } from "@/lib/gemini-helper";
+import { geminiGenerateStream } from "@/lib/gemini-helper";
 import { Part } from "@google/generative-ai";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { retrieveGrounding, type GroundingSource } from "@/lib/judgment-retrieval";
+
+export const dynamic = "force-dynamic";
+
+/** The advisor message arrives with a system/intent prologue; pull out the real question. */
+function userQuestionFrom(message: string): string {
+  const marker = "USER QUESTION:";
+  const idx = message.lastIndexOf(marker);
+  return idx !== -1 ? message.slice(idx + marker.length).trim() : message;
+}
+
+function compactHistory(history: unknown): { role: string; content: string }[] {
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .filter((msg): msg is { role: string; content: string } =>
+      typeof msg?.role === "string" && typeof msg?.content === "string"
+    )
+    .slice(-8)
+    .map((msg) => ({
+      role: msg.role,
+      content: msg.content.slice(0, 1200),
+    }));
+}
+
+/** Does the user actually want case-law / precedent shown? */
+function wantsCaseLaw(q: string): boolean {
+  return /\b(case[ -]?law|judg?ements?|judgments?|precedents?|rulings?|authorit(y|ies)|citations?|scmr|\bpld\b|\bplj\b|\bylr\b|\bmld\b|faisl[ae]|nazair|misal)\b/i.test(q);
+}
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -26,30 +55,78 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Message or image is required" }, { status: 400 });
     }
 
-    const intent = detectIntent(message || "");
-    const prompt = buildAIPrompt(message || "Analyze this legal document", history || []);
+    const realQuestion = userQuestionFrom(message || "");
+    const compacted = compactHistory(history);
+    const intent = detectIntent(realQuestion);
+    const prompt = buildAIPrompt(message || "Analyze this legal document", compacted);
+    const finalLanguageRule = buildLanguageRule(realQuestion || message || "");
 
-    console.log(`[AI Advisor] Intent: ${intent}, Has Image: ${!!image}`);
+    // Only surface judgments when they're actually wanted — a fresh (first)
+    // question, or whenever the user explicitly asks for case-law/precedent.
+    // Plain conversational follow-ups stay clean (no judgment dump every turn).
+    const isFollowUp = compacted.length > 0;
+    const groundNow = !image && !!message && (!isFollowUp || wantsCaseLaw(realQuestion));
 
-    let response: string;
+    let sources: GroundingSource[] = [];
+    let groundedPrompt = prompt;
+    if (groundNow) {
+      const { sources: found, block } = retrieveGrounding(realQuestion);
+      if (block) {
+        sources = found;
+        groundedPrompt = `${prompt}\n\n${block}\n\n${finalLanguageRule}`;
+      }
+    }
 
+    console.log(`[AI Advisor] Intent: ${intent}, Has Image: ${!!image}, Grounded: ${sources.length}`);
+
+    // Build the model input (image + prompt, or grounded text prompt).
+    let parts: string | Part[];
     if (image) {
-      // Image analysis with Gemini vision
       const base64Data = image.split(",")[1] || image;
       const mimeMatch = image.match(/data:([^;]+);/);
       const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
-
-      const parts: Part[] = [
+      parts = [
         { inlineData: { mimeType, data: base64Data } },
-        { text: `${prompt}\n\nIMPORTANT: Analyze the uploaded image/document. Extract all relevant legal text, identify the document type, applicable law sections, and provide legal guidance. Keep response concise (under 300 words).` },
+        { text: `${prompt}\n\nIMPORTANT: Analyze the uploaded image/document. Extract all relevant legal text, identify the document type, applicable law sections, and provide legal guidance. Keep response concise (under 300 words).\n\n${finalLanguageRule}` },
       ];
-
-      response = await geminiGenerate(parts);
     } else {
-      response = await geminiGenerate(prompt);
+      parts = groundedPrompt;
     }
 
-    return NextResponse.json({ response, intent });
+    // Stream the answer back as newline-delimited JSON so the UI can render it
+    // progressively (feels far faster than waiting for the whole reply).
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (obj: unknown) =>
+          controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+        try {
+          for await (const delta of geminiGenerateStream(parts)) {
+            send({ type: "delta", text: delta });
+          }
+          // Attach the verified judgments at the END so they appear under the
+          // finished answer, not as a lone block before any text arrives.
+          send({ type: "done", intent, sources });
+        } catch (error: unknown) {
+          const m = error instanceof Error ? error.message : "";
+          const friendly =
+            m.includes("429") || m.includes("quota") || m.includes("exhausted")
+              ? "AI quota exhausted. Please wait 1 minute and try again."
+              : `AI response failed: ${m || "Unknown error"}`;
+          send({ type: "error", error: friendly });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+      },
+    });
   } catch (error: unknown) {
     console.error("AI advisor error:", error);
     const msg = error instanceof Error ? error.message : "";

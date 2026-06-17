@@ -85,6 +85,8 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "Sale Deed / Registry (Bai Nama)",           kw: ["sale deed", "registry", "registary", "bai nama"],          cat: "agreement" },
   { label: "Adoption Deed",                             kw: ["adoption deed", "gotcha deed"],                             cat: "agreement" },
   { label: "Abdal Nama (Substitution Deed)",            kw: ["abdal nama", "substitution deed"],                         cat: "agreement" },
+  { label: "Compromise Deed (Sulahnama)",               kw: ["sulahnama", "sulah nama", "compromise deed"],               cat: "agreement" },
+  { label: "Trust Deed",                                kw: ["trust deed", "trust"],                                      cat: "agreement" },
 
   // ══════════════════════════════════════════
   // APPLICATIONS / درخواستیں
@@ -107,6 +109,7 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "Application for Utility Connection",        kw: ["utility app", "bijli app"],                                 cat: "application" },
   { label: "Complaint to Ombudsman",                    kw: ["ombuds", "mohtasib"],                                       cat: "application" },
   { label: "Application for Encumbrance Certificate",   kw: ["encumb cert", "rahin cert"],                                cat: "application" },
+  { label: "Lost Item / Document Report (Gum Shudgi)",  kw: ["gum shudgi", "gumshudgi", "lost report", "lost document"],  cat: "application" },
 
   // ══════════════════════════════════════════
   // FAMILY LAW / خاندانی قانون
@@ -150,6 +153,11 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "Plea Bargain Application",                  kw: ["plea", "saza tasmim"],                                      cat: "criminal-law" },
   { label: "Parole Application",                        kw: ["parole", "reeha application"],                              cat: "criminal-law" },
   { label: "Probation Application",                     kw: ["probation", "probation app"],                               cat: "criminal-law" },
+  { label: "Dishonour of Cheque Case (Section 489-F PPC)", kw: ["489f", "489 f", "cheque dishonour", "cheque bounce", "check bounce"], cat: "criminal-law" },
+  { label: "Anti-Terrorism Court (ATC) Bail Application", kw: ["atc bail", "anti terrorism", "terrorism bail", "atc"],     cat: "criminal-law" },
+  { label: "Narcotics (CNSA) Bail Application",          kw: ["narcotics bail", "cnsa", "drug bail", "narcotic"],          cat: "criminal-law" },
+  { label: "Cybercrime Complaint (PECA / FIA)",          kw: ["cyber", "peca", "cyber crime", "fia cyber"],                cat: "criminal-law" },
+  { label: "Defamation Complaint (Hatak-e-Izzat)",       kw: ["defamation crim", "hatak izzat", "hatak"],                 cat: "criminal-law" },
 
   // ══════════════════════════════════════════
   // PROPERTY LAW / جائیداد قانون
@@ -170,6 +178,8 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "Eviction Suit Against Tenant",              kw: ["evict suit", "kiraya khatam"],                              cat: "property-law" },
   { label: "Partition Suit",                            kw: ["partition", "taqseem suit"],                                cat: "property-law" },
   { label: "Property Registration Application",         kw: ["prop reg", "jaidad reg"],                                   cat: "property-law" },
+  { label: "Will (Wasiyat Nama)",                       kw: ["will", "wasiyat", "wasiyat nama"],                          cat: "property-law" },
+  { label: "Family Transfer Deed (Tamleek Nama)",       kw: ["tamleek", "tamleek nama", "family transfer"],               cat: "property-law" },
 
   // ══════════════════════════════════════════
   // CIVIL LAW / دیوانی قانون
@@ -186,6 +196,11 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "Revision Petition (Civil)",                 kw: ["civ rev", "civil revision"],                                cat: "civil-law" },
   { label: "Interim Application",                       kw: ["interim app", "waqti app"],                                 cat: "civil-law" },
   { label: "Suit for Breach of Contract",               kw: ["breach suit", "contract breach"],                           cat: "civil-law" },
+  { label: "Banking Recovery Suit (FIO 2001)",           kw: ["banking suit", "bank recovery", "financial institution", "fio"], cat: "civil-law" },
+  { label: "Consumer Court Complaint",                   kw: ["consumer comp", "consumer court", "consumer protection"],   cat: "civil-law" },
+  { label: "Defamation Suit (Hatak-e-Izzat)",            kw: ["defamation", "hatak izzat suit", "izzat suit"],            cat: "civil-law" },
+  { label: "Caveat Petition",                            kw: ["caveat"],                                                   cat: "civil-law" },
+  { label: "Probate / Letters of Administration",        kw: ["probate", "letters admin", "administration"],              cat: "civil-law" },
 
   // ══════════════════════════════════════════
   // CORPORATE LAW / کارپوریٹ قانون
@@ -204,6 +219,8 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "Articles of Association (AOA)",             kw: ["aoa", "articles assoc"],                                    cat: "corporate-law" },
   { label: "Share Transfer Agreement",                  kw: ["share trans", "hissa transfer"],                            cat: "corporate-law" },
   { label: "Employment Termination Letter",             kw: ["term letter", "nukaala letter"],                            cat: "corporate-law" },
+  { label: "Labour Court Grievance Petition",            kw: ["labour court", "labor grievance", "labour grievance"],      cat: "corporate-law" },
+  { label: "NIRC Petition (Industrial Relations)",       kw: ["nirc", "industrial relations", "industrial dispute"],       cat: "corporate-law" },
 
   // ══════════════════════════════════════════
   // TAX LAW / ٹیکس قانون
@@ -294,6 +311,11 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "First Appeal",                              kw: ["first appeal", "istinaf"],                                  cat: "court-cases" },
   { label: "Second Appeal",                             kw: ["second appeal", "2nd appeal"],                              cat: "court-cases" },
   { label: "Review Petition",                           kw: ["review pet"],                                               cat: "court-cases" },
+  { label: "Dishonour of Cheque Case (Section 489-F PPC)", kw: ["489f", "489 f", "cheque dishonour", "cheque bounce"],    cat: "court-cases" },
+  { label: "Banking Recovery Suit (FIO 2001)",          kw: ["banking suit", "bank recovery", "fio"],                     cat: "court-cases" },
+  { label: "Consumer Court Complaint",                  kw: ["consumer comp", "consumer court"],                          cat: "court-cases" },
+  { label: "Defamation Suit (Hatak-e-Izzat)",           kw: ["defamation", "hatak izzat"],                                cat: "court-cases" },
+  { label: "Cybercrime Complaint (PECA / FIA)",         kw: ["cyber", "peca", "cyber crime"],                             cat: "court-cases" },
 ];
 
 export function getDocSuggestions(
@@ -301,16 +323,23 @@ export function getDocSuggestions(
   filterCat?: string
 ): typeof DOCUMENT_SUGGESTIONS {
   const q = val.trim().toLowerCase();
-  if (q.length < 2 || q.length > 35) return [];
 
   const pool = filterCat
     ? DOCUMENT_SUGGESTIONS.filter(d => d.cat === filterCat)
     : DOCUMENT_SUGGESTIONS;
+
+  // Empty / very short input: on a category page, list every document in that
+  // category so the user can browse all available cases. Without a category we
+  // stay quiet (no point dumping the whole list).
+  if (q.length < 2) {
+    return filterCat ? pool : [];
+  }
+  if (q.length > 35) return [];
 
   return pool.filter(doc => {
     if (doc.label.toLowerCase().includes(q)) return true;
     if (doc.kw.some(k => k.startsWith(q))) return true;
     if (doc.label.toLowerCase().split(/[\s\-()/,]+/).some(w => w.length > 1 && w.startsWith(q))) return true;
     return false;
-  }).slice(0, 9);
+  }).slice(0, 12);
 }

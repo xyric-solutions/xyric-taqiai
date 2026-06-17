@@ -10,10 +10,11 @@ import {
 import {
   isJudgmentSaved, toggleSavedJudgment, onSavedJudgmentsChange,
 } from "@/lib/judgment-store";
+import JudgmentReader from "@/components/documents/JudgmentReader";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-type SearchMode = "keyword" | "citation";
+type SearchMode = "smart" | "keyword" | "citation";
 type ToolTab = "search" | "upload" | "qa";
 type SortMode = "relevance" | "newest" | "oldest";
 interface ChatMessage { role: "user" | "ai"; text: string; }
@@ -94,18 +95,24 @@ export default function JudgmentSearchPage() {
   const [courtFilter, setCourtFilter] = useState("All Courts");
   const [yearFilter, setYearFilter] = useState("All years");
   const [sortMode, setSortMode] = useState<SortMode>("relevance");
+  // Default: only reported (citable) judgments — the noise-free, court-usable set.
+  const [reportedOnly, setReportedOnly] = useState(true);
 
   // Local results
   const [localResults, setLocalResults] = useState<LocalJudgment[]>([]);
   const [isRelated, setIsRelated] = useState(false);
+  // Smart (semantic) search fell back to keyword because the local model is offline
+  const [semanticFallback, setSemanticFallback] = useState(false);
   const [localLoading, setLocalLoading] = useState(false);
   const [localStats, setLocalStats] = useState<{ total: number; processed: number } | null>(null);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [totalPages, setTotalPages] = useState(1);
+  const resultsTopRef = useRef<HTMLDivElement>(null);
 
   // Per-card UI state
   const [passageIdx, setPassageIdx] = useState<Record<number, number>>({});
-  const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [expandedContent, setExpandedContent] = useState<string | null>(null);
-  const [expandLoading, setExpandLoading] = useState(false);
+  const [reader, setReader] = useState<LocalJudgment | null>(null);
   const [headnotes, setHeadnotes] = useState<Record<number, { loading: boolean; text: string | null }>>({});
   const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
 
@@ -151,38 +158,88 @@ export default function JudgmentSearchPage() {
     return onSavedJudgmentsChange(refreshSaved);
   }, [refreshSaved]);
 
+  // Deep-link search: e.g. /case-law?q=2015%20PLJ%201122&mode=citation
+  // (used by the AI Advisor's verified-source links and cited-case jumps).
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const q = sp.get("q");
+    if (!q) return;
+    const mode = sp.get("mode");
+    if (mode === "citation" || mode === "keyword") setSearchMode(mode);
+    setQuery(q);
+    runSearch(q);
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Handlers ──────────────────────────────────────────────────────────────────
 
   const runSearch = async (
     overrideQuery?: string,
-    opts?: { court?: string; year?: string; sort?: SortMode }
+    opts?: { court?: string; year?: string; sort?: SortMode; page?: number; reported?: boolean }
   ) => {
     const q = (overrideQuery ?? query).trim();
     if (!q) return;
     const court = opts?.court ?? courtFilter;
     const year = opts?.year ?? yearFilter;
     const sort = opts?.sort ?? sortMode;
+    const nextPage = opts?.page ?? 1;
+    const reported = opts?.reported ?? reportedOnly;
 
     setToolTab("search");
     setSearched(true);
     setLocalLoading(true);
-    setExpandedId(null); setExpandedContent(null);
     setAiResult(""); setAiError("");
 
+    // Smart (semantic) search: one ranked page from the local embedding model.
+    if (searchMode === "smart") {
+      try {
+        const params = new URLSearchParams({ q });
+        if (court !== "All Courts") params.set("court", court);
+        if (year !== "All years") params.set("year", year);
+        if (!reported) params.set("reported", "0");
+        const res = await fetch(`/api/judgments/semantic?${params}`);
+        const data = await res.json();
+        setLocalResults(data.results || []);
+        setIsRelated(false);
+        setSemanticFallback(data.available === false);
+        setHasMore(false); setPage(1); setTotalPages(1);
+        setPassageIdx({});
+      } catch {
+        setLocalResults([]);
+      }
+      setLocalLoading(false);
+      return;
+    }
+    setSemanticFallback(false);
+
     try {
-      const params = new URLSearchParams({ q, sort });
+      const params = new URLSearchParams({ q, sort, page: String(nextPage) });
       if (court !== "All Courts") params.set("court", court);
       if (year !== "All years") params.set("year", year);
+      if (!reported) params.set("reported", "0");
+      // After page 1 we already know whether we're in related-fallback mode.
+      if (nextPage > 1 && isRelated) params.set("related", "1");
       const res = await fetch(`/api/judgments/local?${params}`);
       const data = await res.json();
       setLocalResults(data.results || []);
       setIsRelated(!!data.related);
+      setHasMore(!!data.hasMore);
+      setPage(data.page || nextPage);
+      setTotalPages(data.totalPages || 1);
       setPassageIdx({});
       if (data.stats) setLocalStats(data.stats);
+      // jump back to the top of the list when paging
+      if (nextPage > 1) resultsTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch {
       setLocalResults([]);
     }
     setLocalLoading(false);
+  };
+
+  const goToPage = (p: number) => {
+    if (p < 1 || localLoading) return;
+    runSearch(undefined, { page: p });
   };
 
   const handleAskAI = async () => {
@@ -206,15 +263,13 @@ export default function JudgmentSearchPage() {
     }
   };
 
-  const handleRead = async (id: number) => {
-    if (expandedId === id) { setExpandedId(null); setExpandedContent(null); return; }
-    setExpandedId(id); setExpandedContent(null); setExpandLoading(true);
-    try {
-      const res = await fetch(`/api/judgments/local/${id}`);
-      const data = await res.json();
-      setExpandedContent(data.judgment?.content || null);
-    } catch { setExpandedContent(null); }
-    setExpandLoading(false);
+  // Open a judgment in the full-screen reader, and let the reader's cited-case
+  // links bounce back here to run a fresh citation search.
+  const handleSearchCitation = (citation: string) => {
+    setReader(null);
+    setSearchMode("citation");
+    setQuery(citation);
+    runSearch(citation);
   };
 
   const handleHeadnote = async (j: LocalJudgment) => {
@@ -307,8 +362,10 @@ export default function JudgmentSearchPage() {
     }
   };
 
+  const smartExamples = ["Landlord wants to evict a tenant who stopped paying rent", "Accused seeking bail in a narcotics case", "Buyer suing seller to enforce a sale agreement"];
   const keywordExamples = ["Adverse possession", "Bail cancellation", "Specific performance", "Defamation", "Qatl-e-Amd"];
   const citationExamples = ["2023 SCMR 1450", "PLD 2019 SC 304", "2021 PCrLJ 500", "2020 MLD 1000"];
+  const examples = searchMode === "smart" ? smartExamples : searchMode === "keyword" ? keywordExamples : citationExamples;
 
   const cardStyle = { background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)" };
   const errorBox = (msg: string, onClose: () => void) => (
@@ -331,7 +388,6 @@ export default function JudgmentSearchPage() {
     const idx = passageIdx[j.id] ?? 0;
     const heading = j.title || j.caseNo || j.citation;
     const hn = headnotes[j.id];
-    const open = expandedId === j.id;
 
     return (
       <div key={j.id} className="rounded-2xl overflow-hidden" style={cardStyle}>
@@ -410,28 +466,13 @@ export default function JudgmentSearchPage() {
                 <Eye className="h-3.5 w-3.5" /> Headnote
               </button>
             )}
-            <button onClick={() => handleRead(j.id)}
+            <button onClick={() => setReader(j)}
               className="flex items-center gap-1.5 px-3.5 py-2 text-[12px] font-semibold rounded-lg transition-all"
-              style={open
-                ? { background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.35)", color: "var(--color-primary-300)" }
-                : { background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}>
-              <BookOpen className="h-3.5 w-3.5" /> {open ? "Close" : "Read"}
+              style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}>
+              <BookOpen className="h-3.5 w-3.5" /> Read
             </button>
           </div>
         </div>
-
-        {/* full text */}
-        {open && (
-          <div className="p-5" style={{ borderTop: "1px solid var(--border-subtle)", background: "var(--bg-surface-2)" }}>
-            {expandLoading ? (
-              <div className="flex items-center gap-2 py-4"><Dots /><span className="text-xs" style={{ color: "var(--text-tertiary)" }}>Loading judgment text…</span></div>
-            ) : expandedContent ? (
-              <div className="whitespace-pre-wrap text-sm leading-relaxed max-h-[560px] overflow-y-auto" style={{ color: "var(--text-secondary)" }}>{expandedContent}</div>
-            ) : (
-              <div className="py-4 text-center"><p className="text-sm" style={{ color: "var(--text-tertiary)" }}>Full text not yet extracted for this judgment.</p></div>
-            )}
-          </div>
-        )}
       </div>
     );
   };
@@ -440,6 +481,15 @@ export default function JudgmentSearchPage() {
 
   return (
     <div className="space-y-5">
+
+      {/* full-screen judgment reader */}
+      {reader && (
+        <JudgmentReader
+          judgment={reader}
+          onClose={() => setReader(null)}
+          onSearchCitation={handleSearchCitation}
+        />
+      )}
 
       {/* ── Header ── */}
       <div>
@@ -475,7 +525,7 @@ export default function JudgmentSearchPage() {
             <div className="flex items-center gap-3 flex-1 rounded-xl px-4 focus-within:border-primary-500/40 transition-colors" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)" }}>
               <Search className="h-5 w-5 flex-shrink-0" strokeWidth={1.75} style={{ color: "var(--text-tertiary)" }} />
               <input type="text" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runSearch()}
-                placeholder={searchMode === "keyword" ? "Search with keywords, e.g. bail cancellation principles" : 'Enter a citation, e.g. "2023 SCMR 1450" or "PLD 2019 SC 304"'}
+                placeholder={searchMode === "smart" ? "Describe the matter in plain words, e.g. tenant not paying rent, want eviction" : searchMode === "keyword" ? "Search with keywords, e.g. bail cancellation principles" : 'Enter a citation, e.g. "2023 SCMR 1450" or "PLD 2019 SC 304"'}
                 className="flex-1 bg-transparent text-sm py-3.5 focus:outline-none border-0" style={{ color: "var(--text-primary)" }} />
               {query && <button onClick={() => setQuery("")} style={{ color: "var(--text-tertiary)" }} className="hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>}
             </div>
@@ -486,20 +536,25 @@ export default function JudgmentSearchPage() {
           </div>
 
           {/* mode toggle */}
-          <div className="inline-flex p-0.5 rounded-lg" style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-default)" }}>
-            {([{ id: "keyword", label: "Keyword" }, { id: "citation", label: "Citation" }] as { id: SearchMode; label: string }[]).map((t) => (
-              <button key={t.id} onClick={() => setSearchMode(t.id)}
-                className={`px-4 py-1.5 text-[12px] font-semibold rounded-md transition-all ${searchMode === t.id ? "bg-primary-500 text-[#07090f]" : "hover:text-[var(--text-primary)]"}`}
-                style={searchMode === t.id ? undefined : { color: "var(--text-tertiary)" }}>
-                {t.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="inline-flex p-0.5 rounded-lg" style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-default)" }}>
+              {([{ id: "smart", label: "Smart" }, { id: "keyword", label: "Keyword" }, { id: "citation", label: "Citation" }] as { id: SearchMode; label: string }[]).map((t) => (
+                <button key={t.id} onClick={() => setSearchMode(t.id)}
+                  className={`px-4 py-1.5 text-[12px] font-semibold rounded-md transition-all ${searchMode === t.id ? "bg-primary-500 text-[#07090f]" : "hover:text-[var(--text-primary)]"}`}
+                  style={searchMode === t.id ? undefined : { color: "var(--text-tertiary)" }}>
+                  {t.id === "smart" && <Sparkles className="inline h-3 w-3 mr-1 -mt-0.5" />}{t.label}
+                </button>
+              ))}
+            </div>
+            {searchMode === "smart" && (
+              <span className="text-[11px]" style={{ color: "var(--text-tertiary)" }}>Search by meaning — describe the issue in your own words.</span>
+            )}
           </div>
 
           {!searched && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] mr-1" style={{ color: "var(--text-tertiary)" }}>Try:</span>
-              {(searchMode === "keyword" ? keywordExamples : citationExamples).map((ex) => (
+              {examples.map((ex) => (
                 <button key={ex} onClick={() => { setQuery(ex); runSearch(ex); }}
                   className="px-3 py-1 text-[11px] font-medium rounded-lg hover:text-primary-400 hover:border-primary-500/30 transition-all"
                   style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}>
@@ -513,13 +568,15 @@ export default function JudgmentSearchPage() {
           {searched && (
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-5 items-start">
               {/* main column */}
-              <div className="space-y-3 min-w-0">
+              <div ref={resultsTopRef} className="space-y-3 min-w-0 scroll-mt-4">
                 {/* fallback / count line */}
                 <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <p className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
+                  <p className="text-[13px] flex items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
+                    {searchMode === "smart" && !localLoading && !semanticFallback && localResults.length > 0 && <Sparkles className="h-3.5 w-3.5 text-ai-500" />}
                     {localLoading ? "Searching…"
                       : localResults.length === 0 ? "No judgments found."
                       : isRelated ? `No exact match — ${localResults.length} related judgment${localResults.length > 1 ? "s" : ""}`
+                      : searchMode === "smart" && !semanticFallback ? `${localResults.length} judgment${localResults.length > 1 ? "s" : ""} by meaning`
                       : `${localResults.length} judgment${localResults.length > 1 ? "s" : ""}`}
                   </p>
                   <div className="flex items-center gap-1.5 text-[12px]">
@@ -527,6 +584,14 @@ export default function JudgmentSearchPage() {
                     <button onClick={handleAskAI} disabled={aiLoading || !query.trim()} className="font-semibold text-primary-400 hover:text-primary-300 disabled:opacity-50">Ask AI</button>
                   </div>
                 </div>
+
+                {/* Smart search offline → keyword fallback notice */}
+                {semanticFallback && !localLoading && (
+                  <div className="flex items-start gap-2 px-3 py-2 rounded-xl text-[12px] bg-warning-500/10 border border-warning-500/25" style={{ color: "var(--text-secondary)" }}>
+                    <Sparkles className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-warning-500" />
+                    <span>Smart search is offline — showing keyword matches instead. Start the semantic service to enable meaning-based search.</span>
+                  </div>
+                )}
 
                 {/* AI answer (lazy) */}
                 {(aiLoading || aiResult || aiError) && (
@@ -563,6 +628,23 @@ export default function JudgmentSearchPage() {
                 )}
 
                 {!localLoading && localResults.map((j) => ResultCard(j))}
+
+                {/* pagination */}
+                {!localLoading && localResults.length > 0 && (page > 1 || hasMore) && (
+                  <div className="flex items-center justify-center gap-3 pt-3">
+                    <button onClick={() => goToPage(page - 1)} disabled={page <= 1 || localLoading} aria-label="Previous page"
+                      className="grid place-items-center w-9 h-9 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed hover:text-[var(--text-primary)]"
+                      style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}>
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+                    <span className="text-[13px] font-medium px-1" style={{ color: "var(--text-secondary)" }}>Page {page} of {totalPages}</span>
+                    <button onClick={() => goToPage(page + 1)} disabled={!hasMore || localLoading} aria-label="Next page"
+                      className="grid place-items-center w-9 h-9 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed hover:text-[var(--text-primary)]"
+                      style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}>
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* sidebar */}
@@ -599,6 +681,20 @@ export default function JudgmentSearchPage() {
 
                 <div className="rounded-2xl p-4 space-y-3" style={cardStyle}>
                   <h4 className="text-[11px] font-bold tracking-wide uppercase" style={{ color: "var(--text-tertiary)" }}>Refine Results</h4>
+                  <button
+                    onClick={() => { const v = !reportedOnly; setReportedOnly(v); runSearch(undefined, { reported: v }); }}
+                    className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-left transition-all"
+                    style={reportedOnly
+                      ? { background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.35)" }
+                      : { background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)" }}>
+                    <span className="min-w-0">
+                      <span className="block text-[12px] font-semibold" style={{ color: reportedOnly ? "var(--color-primary-300)" : "var(--text-primary)" }}>Reported only</span>
+                      <span className="block text-[10px]" style={{ color: "var(--text-tertiary)" }}>Citable judgments with a law-report citation</span>
+                    </span>
+                    <span className="w-9 h-5 rounded-full flex-shrink-0 relative transition-colors" style={{ background: reportedOnly ? "var(--color-primary-500)" : "var(--border-strong)" }}>
+                      <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all" style={{ left: reportedOnly ? "18px" : "2px" }} />
+                    </span>
+                  </button>
                   <div>
                     <label className="block text-[11px] mb-1.5" style={{ color: "var(--text-secondary)" }}>Court</label>
                     <FilterSelect label="Court" value={courtFilter} options={COURTS} onChange={(v) => { setCourtFilter(v); runSearch(undefined, { court: v }); }} />

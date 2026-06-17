@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { normalizeGeneratedHtml, textFromHtml } from "@/lib/document-html";
 import {
   AlignCenter,
@@ -959,8 +960,8 @@ export default function FullscreenDocModal({ html, language = "en", onClose, onS
     { label: "Missing verification", found: !/verification/i.test(reviewText), okText: "Verification section found" },
   ];
 
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col">
+  const modalContent = (
+    <div className="fixed inset-0 z-[100] flex flex-col" style={{ background: "#525659" }}>
       <style>{legalPageContentCss(".legal-page-content")}</style>
       <div style={{ background: "#f3f3f3", borderBottom: "1px solid #ccc" }} className="flex flex-wrap items-center gap-1 px-3 py-2">
         <button onClick={onClose} className={btn} title="Close"><X size={16} /></button>
@@ -1221,4 +1222,8 @@ export default function FullscreenDocModal({ html, language = "en", onClose, onS
       </div>
     </div>
   );
+
+  return typeof document !== "undefined"
+    ? createPortal(modalContent, document.body)
+    : modalContent;
 }

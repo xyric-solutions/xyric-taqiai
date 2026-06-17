@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getLocalJudgmentById } from "@/lib/judgment-db";
+import { getLocalJudgmentById, getCitedByCount } from "@/lib/judgment-db";
 import { getCurrentUser } from "@/lib/auth";
 
 export async function GET(
@@ -16,5 +16,7 @@ export async function GET(
   const judgment = getLocalJudgmentById(numId);
   if (!judgment) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  return NextResponse.json({ judgment });
+  const citedBy = getCitedByCount(judgment.real_citation || judgment.citation);
+
+  return NextResponse.json({ judgment, citedBy });
 }

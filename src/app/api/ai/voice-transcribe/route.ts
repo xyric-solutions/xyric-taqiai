@@ -13,7 +13,6 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const audio = formData.get("audio") as File;
-    const speaker = (formData.get("speaker") as string) || "client";
 
     if (!audio) {
       return NextResponse.json({ error: "Audio required" }, { status: 400 });
@@ -23,25 +22,27 @@ export async function POST(request: NextRequest) {
     const base64 = Buffer.from(bytes).toString("base64");
     const mimeType = audio.type || "audio/webm";
 
-    const prompt = `You are a professional transcriber. This is a voice recording from a ${speaker === "lawyer" ? "LAWYER discussing a legal case" : "CLIENT explaining their legal problem"} in Pakistan.
+    const prompt = `You are a professional transcriber. This is a voice recording of a legal discussion in Pakistan — usually a lawyer and a client talking about the client's legal matter (there may be one or more speakers).
 
-TRANSCRIBE the audio completely. The speaker may use:
+TRANSCRIBE the audio completely from start to end. The speakers may use:
 - English
 - Urdu
 - Roman Urdu (English letters, Urdu words)
 - Mixed (Urdu + English)
 
+If you can clearly tell that different people are speaking, you may start a new line for each turn — but do NOT guess or invent speaker names.
+
 OUTPUT FORMAT:
 Return ONLY the transcribed text in the original language spoken. If Urdu Roman, keep it Roman. If Urdu script, keep Urdu script. If English, keep English. Mixed is fine.
 
-Do NOT translate. Do NOT summarize. Just transcribe word by word.`;
+Do NOT translate. Do NOT summarize. Just transcribe what is said.`;
 
     const transcription = await geminiGenerate([
       { inlineData: { mimeType, data: base64 } },
       { text: prompt },
     ]);
 
-    return NextResponse.json({ transcription, speaker });
+    return NextResponse.json({ transcription });
   } catch (error: unknown) {
     console.error("Voice transcribe error:", error);
     const msg = error instanceof Error ? error.message : "";

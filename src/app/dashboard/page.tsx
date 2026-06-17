@@ -5,13 +5,18 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Sidebar from "@/components/layout/Sidebar";
 import Topbar from "@/components/layout/Topbar";
-import { getAllDocuments } from "@/lib/document-store";
-import { getSavedJudgments, onSavedJudgmentsChange } from "@/lib/judgment-store";
+import { getAllDocuments, type SavedDocument } from "@/lib/document-store";
+import { getSavedJudgments, onSavedJudgmentsChange, type SavedJudgment } from "@/lib/judgment-store";
+import {
+  getClientNotes, addClientNote, removeClientNote, onClientNotesChange,
+  type ClientNote,
+} from "@/lib/client-notes-store";
 import {
   CalendarPlus, CalendarDays, FileText, BookMarked, FolderCheck,
   AlertTriangle, Clock, FilePen, Search, Languages, Calculator,
   PenLine, Star, ArrowRight, Sparkles, Scale, BadgeCheck, Paperclip, Mic,
-  Send, MoreVertical, ShieldCheck, Bookmark, ScrollText,
+  Send, ShieldCheck, Bookmark, ScrollText, ScanLine, Library,
+  Plus, Trash2, X, User,
 } from "lucide-react";
 
 /* ───────────────────────────── Data ───────────────────────────── */
@@ -46,11 +51,14 @@ const PILL_CLS: Record<string, string> = {
 };
 
 const ACTIONS = [
-  { label: "Draft Bail Application", sub: "CrPC 497 · AI assisted drafting",      icon: FilePen,    href: "/draft-review", featured: true },
-  { label: "Search Case Law",        sub: "Find judgments and citations",          icon: Search,     href: "/case-law" },
-  { label: "Translate Urdu Document", sub: "Urdu to English legal translation",    icon: Languages,  href: "/translate" },
-  { label: "Calculate Property Tax", sub: "Punjab property tax calculator",        icon: Calculator, href: "/property-transfer/tax-calculator" },
-  { label: "Create Affidavit",       sub: "Generate affidavits and declarations",  icon: PenLine,    href: "/affidavits" },
+  { label: "Draft Bail Application", sub: "CrPC 497 · AI assisted drafting",        icon: FilePen,    href: "/draft-review", featured: true },
+  { label: "Voice Case",             sub: "Record client discussion · AI drafts it", icon: Mic,        href: "/voice-case" },
+  { label: "Copy from Photo",        sub: "Photo of a document · AI types it out",   icon: ScanLine,   href: "/copy-from-photo" },
+  { label: "Search Case Law",        sub: "Find judgments and citations",            icon: Search,     href: "/case-law" },
+  { label: "Statute Search",         sub: "Search acts, sections and statutes",      icon: Library,    href: "/statute-search" },
+  { label: "Translate Urdu Document", sub: "Urdu to English legal translation",      icon: Languages,  href: "/translate" },
+  { label: "Create Affidavit",       sub: "Generate affidavits and declarations",    icon: PenLine,    href: "/affidavits" },
+  { label: "Calculate Property Tax", sub: "Punjab property tax calculator",          icon: Calculator, href: "/property-transfer/tax-calculator" },
 ];
 
 const ADVISOR = [
@@ -58,19 +66,6 @@ const ADVISOR = [
   { label: "Find latest SCMR citations", sub: "Search recent Supreme Court judgments",    icon: BookMarked, q: "Find the latest SCMR citations on bail" },
   { label: "Generate filing checklist", sub: "Court-wise checklist for your case",         icon: BadgeCheck, q: "Generate a court-wise filing checklist for a bail application" },
 ];
-
-type DraftItem = { title: string; party: string; ref: string; status: string; href: string };
-const DRAFTS: DraftItem[] = [];
-
-const TAG_CLS: Record<string, { label: string; cls: string }> = {
-  review:   { label: "Needs Review",  cls: "text-warning-500 bg-warning-500/10" },
-  approved: { label: "Approved",      cls: "text-success-500 bg-success-500/10" },
-  missing:  { label: "Missing Facts", cls: "text-danger-500 bg-danger-500/10" },
-  exported: { label: "Exported PDF",  cls: "text-primary-400 bg-primary-500/10" },
-};
-
-type WatchItem = { title: string; topic: string; cite: string; ago: string; conf: number };
-const WATCH: WatchItem[] = [];
 
 /* ───────────────────────────── Bits ───────────────────────────── */
 
@@ -120,6 +115,121 @@ function CardHead({ title, action }: { title: string; action: React.ReactNode })
   );
 }
 
+function timeAgo(ts: number): string {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(ts).toLocaleDateString("en-PK", { day: "numeric", month: "short" });
+}
+
+function ClientNoteCard() {
+  const [notes, setNotes] = useState<ClientNote[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [client, setClient] = useState("");
+  const [caseRef, setCaseRef] = useState("");
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    const sync = () => setNotes(getClientNotes());
+    sync();
+    return onClientNotesChange(sync);
+  }, []);
+
+  const save = () => {
+    if (!client.trim() || !note.trim()) return;
+    addClientNote({ client, caseRef, note });
+    setClient(""); setCaseRef(""); setNote(""); setAdding(false);
+  };
+
+  return (
+    <section className="rounded-xl flex flex-col overflow-hidden" style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)" }}>
+      <CardHead title="Client Note" action={
+        <button
+          onClick={() => setAdding((v) => !v)}
+          className="inline-flex items-center gap-1 text-[11px] font-semibold transition-colors hover:text-primary-400"
+          style={{ color: adding ? "var(--text-secondary)" : "var(--text-tertiary)" }}
+        >
+          {adding ? <><X className="h-3 w-3" strokeWidth={2.25} /> Cancel</> : <><Plus className="h-3 w-3" strokeWidth={2.5} /> Add Note</>}
+        </button>
+      } />
+
+      {adding && (
+        <div className="flex flex-col gap-2 px-3 pt-3" style={{ borderBottom: "1px solid var(--border-subtle)", paddingBottom: "12px" }}>
+          <div className="flex gap-2">
+            <input
+              value={client}
+              onChange={(e) => setClient(e.target.value)}
+              placeholder="Client name"
+              className="flex-1 h-9 px-3 rounded-lg bg-transparent border-0 outline-none text-[12px]"
+              style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+            />
+            <input
+              value={caseRef}
+              onChange={(e) => setCaseRef(e.target.value)}
+              placeholder="Case ref (optional)"
+              className="w-[40%] h-9 px-3 rounded-lg bg-transparent border-0 outline-none text-[12px]"
+              style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+            />
+          </div>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="What did the client say? Record the key points…"
+            rows={3}
+            className="w-full px-3 py-2 rounded-lg bg-transparent border-0 outline-none text-[12px] resize-none leading-relaxed"
+            style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+          />
+          <button
+            onClick={save}
+            disabled={!client.trim() || !note.trim()}
+            className="self-end inline-flex items-center gap-1.5 h-9 px-4 rounded-lg text-[12px] font-semibold text-white transition-opacity disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg,#06b6d4,#0891b2)" }}
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={2.5} /> Save Note
+          </button>
+        </div>
+      )}
+
+      {notes.length === 0 ? (
+        !adding && <Empty icon={ScrollText} text="No client notes yet. Click “Add Note” to record what a client tells you." />
+      ) : (
+        <div className="flex flex-col p-2 gap-0.5 overflow-y-auto">
+          {notes.map((n) => (
+            <div key={n.id} className="group flex items-start gap-2.5 p-2.5 rounded-lg hover:bg-[var(--bg-surface-2)] transition-colors">
+              <span className="w-7 h-7 rounded-md grid place-items-center flex-shrink-0" style={{ background: "var(--bg-surface-2)", color: "var(--text-secondary)" }}>
+                <User className="h-3.5 w-3.5" strokeWidth={1.75} />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="flex items-center gap-2">
+                  <span className="text-[12.5px] font-semibold truncate" style={{ color: "var(--text-primary)" }}>{n.client}</span>
+                  {n.caseRef && <span className="text-[9.5px] font-mono px-1.5 py-0.5 rounded text-primary-300 bg-primary-500/10 border border-primary-500/20 flex-shrink-0">{n.caseRef}</span>}
+                </span>
+                <span className="block text-[11px] mt-0.5 leading-relaxed line-clamp-2" style={{ color: "var(--text-tertiary)" }}>{n.note}</span>
+                <span className="block text-[9.5px] mt-1" style={{ color: "var(--text-tertiary)" }}>{timeAgo(n.createdAt)}</span>
+              </span>
+              <button
+                onClick={() => removeClientNote(n.id)}
+                aria-label="Delete note"
+                className="w-6 h-6 rounded grid place-items-center flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-danger-500/10"
+                style={{ color: "var(--text-tertiary)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#ef4444")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-tertiary)")}
+              >
+                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ───────────────────────────── Page ───────────────────────────── */
 
 export default function DashboardPage() {
@@ -131,8 +241,10 @@ export default function DashboardPage() {
 
   // ── Live data: Chamber matters, generated documents, saved case law ──
   const [matters, setMatters] = useState<MatterLite[]>([]);
-  const [docCount, setDocCount] = useState(0);
-  const [savedCount, setSavedCount] = useState(0);
+  const [docs, setDocs] = useState<SavedDocument[]>([]);
+  const [saved, setSaved] = useState<SavedJudgment[]>([]);
+  const docCount = docs.length;
+  const savedCount = saved.length;
 
   useEffect(() => {
     let active = true;
@@ -145,16 +257,20 @@ export default function DashboardPage() {
 
     // Generated documents (DB + local)
     getAllDocuments()
-      .then((docs) => { if (active) setDocCount(docs.length); })
-      .catch(() => { if (active) setDocCount(0); });
+      .then((d) => { if (active) setDocs(d); })
+      .catch(() => { if (active) setDocs([]); });
 
     // Saved case law (localStorage) + live updates when bookmarks change
-    const syncSaved = () => setSavedCount(getSavedJudgments().length);
+    const syncSaved = () => setSaved(getSavedJudgments());
     syncSaved();
     const unsub = onSavedJudgmentsChange(syncSaved);
 
     return () => { active = false; unsub(); };
   }, []);
+
+  // Most-recent first, top 5 for the dashboard cards
+  const recentDrafts = [...docs].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5);
+  const recentSaved = saved.slice(0, 5);
 
   const todayMatters = matters.filter((m) => isToday(m.nextHearing));
 
@@ -299,21 +415,21 @@ export default function DashboardPage() {
                 <CardHead title="Quick Legal Actions" action={
                   <button className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>Edit</button>
                 } />
-                <div className="flex flex-col gap-1 p-2.5">
+                <div className="flex flex-col gap-0.5 p-2">
                   {ACTIONS.map((a) => {
                     const Icon = a.icon;
                     return (
                       <Link
                         key={a.label}
                         href={a.href}
-                        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors ${a.featured ? "bg-primary-500/10 border-primary-500/30" : "border-transparent hover:bg-[var(--bg-surface-2)]"}`}
+                        className={`flex items-center gap-2.5 px-2.5 py-[7px] rounded-lg border transition-colors ${a.featured ? "bg-primary-500/10 border-primary-500/30" : "border-transparent hover:bg-[var(--bg-surface-2)]"}`}
                       >
-                        <span className={`w-8 h-8 rounded-lg grid place-items-center flex-shrink-0 ${a.featured ? "bg-primary-500/15 text-primary-400" : ""}`} style={a.featured ? undefined : { background: "var(--bg-surface-2)", color: "var(--text-secondary)" }}>
-                          <Icon className="h-4 w-4" strokeWidth={1.75} />
+                        <span className={`w-7 h-7 rounded-md grid place-items-center flex-shrink-0 ${a.featured ? "bg-primary-500/15 text-primary-400" : ""}`} style={a.featured ? undefined : { background: "var(--bg-surface-2)", color: "var(--text-secondary)" }}>
+                          <Icon className="h-[15px] w-[15px]" strokeWidth={1.75} />
                         </span>
                         <span className="flex-1 min-w-0">
-                          <span className="block text-[12.5px] font-semibold" style={{ color: "var(--text-primary)" }}>{a.label}</span>
-                          <span className="block text-[10.5px]" style={{ color: "var(--text-tertiary)" }}>{a.sub}</span>
+                          <span className="block text-[12px] font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>{a.label}</span>
+                          <span className="block text-[10px] leading-tight mt-0.5" style={{ color: "var(--text-tertiary)" }}>{a.sub}</span>
                         </span>
                         {a.featured
                           ? <Star className="h-3.5 w-3.5 text-primary-400 flex-shrink-0" strokeWidth={2} fill="currentColor" />
@@ -326,7 +442,7 @@ export default function DashboardPage() {
 
               {/* Advisor */}
               <section className="rounded-xl flex flex-col overflow-hidden" style={{ background: "var(--bg-surface-1)", border: "1px solid rgba(167,139,250,0.2)" }}>
-                <CardHead title="TaqiAI Advisor" action={<span className="text-[9.5px] text-ai-500 tracking-wide">Powered by Legal AI</span>} />
+                <CardHead title="TaqiAI Advisor" action={<span className="text-[9.5px] text-ai-500 tracking-wide">Powered by Xyric</span>} />
                 <div className="px-4 pt-3.5">
                   <p className="font-display text-[15px] font-semibold" style={{ color: "var(--text-primary)" }}>What do you want to prepare today?</p>
                   <p className="text-[11px] mt-1 mb-3" style={{ color: "var(--text-tertiary)" }}>Smart suggestions based on your recent work.</p>
@@ -371,21 +487,21 @@ export default function DashboardPage() {
               {/* Recent drafts */}
               <section className="rounded-xl flex flex-col overflow-hidden" style={cardStyle}>
                 <CardHead title="Recent Drafts" action={<Link href="/documents" className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>View All</Link>} />
-                {DRAFTS.length === 0 ? (
+                {recentDrafts.length === 0 ? (
                   <Empty icon={FilePen} text="No drafts yet. Start a new draft and it will show up here." cta="Create your first draft" href="/draft-review" />
                 ) : (
                   <div className="flex flex-col p-2">
-                    {DRAFTS.map((d) => {
-                      const t = TAG_CLS[d.status];
-                      return (
-                        <Link key={d.title} href={d.href} className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-[var(--bg-surface-2)] transition-colors">
-                          <span className="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0" style={{ background: "var(--bg-surface-2)", color: "var(--text-secondary)" }}><FileText className="h-4 w-4" strokeWidth={1.75} /></span>
-                          <span className="flex-1 min-w-0"><span className="block text-[12.5px] font-semibold truncate" style={{ color: "var(--text-primary)" }}>{d.title} <span className="font-normal" style={{ color: "var(--text-tertiary)" }}>· {d.party}</span></span><span className="text-[10.5px] font-mono" style={{ color: "var(--text-tertiary)" }}>{d.ref}</span></span>
-                          <span className={`text-[10px] font-semibold px-2 py-1 rounded ${t.cls}`}>{t.label}</span>
-                          <button className="w-6 h-6 rounded grid place-items-center hover:bg-[var(--bg-surface-3)]" style={{ color: "var(--text-tertiary)" }} aria-label="More"><MoreVertical className="h-4 w-4" strokeWidth={2} /></button>
-                        </Link>
-                      );
-                    })}
+                    {recentDrafts.map((d) => (
+                      <Link key={d.id} href={`/documents/${d.id}`} className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-[var(--bg-surface-2)] transition-colors">
+                        <span className="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0" style={{ background: "var(--bg-surface-2)", color: "var(--text-secondary)" }}><FileText className="h-4 w-4" strokeWidth={1.75} /></span>
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-[12.5px] font-semibold truncate" style={{ color: "var(--text-primary)" }}>{d.title || "Untitled draft"}</span>
+                          <span className="block text-[10.5px] truncate" style={{ color: "var(--text-tertiary)" }}>{[d.category, d.subType].filter(Boolean).join(" · ") || "Document"} · {timeAgo(d.updatedAt)}</span>
+                        </span>
+                        {d.language && <span className="text-[10px] font-semibold px-2 py-1 rounded text-primary-300 bg-primary-500/10 flex-shrink-0 uppercase">{d.language}</span>}
+                        <ArrowRight className="h-3.5 w-3.5 flex-shrink-0" strokeWidth={2} style={{ color: "var(--text-tertiary)" }} />
+                      </Link>
+                    ))}
                   </div>
                 )}
               </section>
@@ -393,18 +509,21 @@ export default function DashboardPage() {
               {/* Case law watch */}
               <section className="rounded-xl flex flex-col overflow-hidden" style={cardStyle}>
                 <CardHead title="Case Law Watch" action={<Link href="/case-law" className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>View All</Link>} />
-                {WATCH.length === 0 ? (
+                {recentSaved.length === 0 ? (
                   <Empty icon={BookMarked} text="No saved judgments yet. Bookmark case law to track it here." cta="Browse case law" href="/case-law" />
                 ) : (
                   <div className="flex flex-col p-2">
-                    {WATCH.map((w) => (
-                      <Link key={w.title} href="/case-law" className="flex items-start gap-3 p-2.5 rounded-lg hover:bg-[var(--bg-surface-2)] transition-colors">
-                        <span className="flex-1 min-w-0"><span className="block text-[12.5px] font-semibold truncate" style={{ color: "var(--text-primary)" }}>{w.title}</span><span className="text-[10.5px]" style={{ color: "var(--text-tertiary)" }}>{w.topic}</span></span>
-                        <span className="flex flex-col items-end gap-1 flex-shrink-0">
-                          <span className="text-[10px] font-mono px-2 py-0.5 rounded text-primary-300 bg-primary-500/10 border border-primary-500/20">{w.cite}</span>
-                          <span className="flex items-center gap-2"><span className="inline-flex items-center gap-1 text-[10px] font-semibold text-success-500"><ShieldCheck className="h-3 w-3" strokeWidth={2} />{w.conf}%</span><span className="text-[9.5px]" style={{ color: "var(--text-tertiary)" }}>{w.ago}</span></span>
+                    {recentSaved.map((w) => (
+                      <Link key={w.id} href="/case-law" className="flex items-start gap-3 p-2.5 rounded-lg hover:bg-[var(--bg-surface-2)] transition-colors">
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-[12.5px] font-semibold truncate" style={{ color: "var(--text-primary)" }}>{w.title || w.citation}</span>
+                          <span className="text-[10.5px]" style={{ color: "var(--text-tertiary)" }}>{[w.court, w.year].filter(Boolean).join(" · ")} · {timeAgo(w.savedAt)}</span>
                         </span>
-                        <Bookmark className="h-4 w-4 flex-shrink-0 mt-0.5" strokeWidth={1.75} style={{ color: "var(--text-tertiary)" }} />
+                        <span className="flex flex-col items-end gap-1 flex-shrink-0">
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded text-primary-300 bg-primary-500/10 border border-primary-500/20">{w.citation}</span>
+                          {w.reported && <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-success-500"><ShieldCheck className="h-3 w-3" strokeWidth={2} />Reported</span>}
+                        </span>
+                        <Bookmark className="h-4 w-4 flex-shrink-0 mt-0.5 text-primary-400" strokeWidth={1.75} fill="currentColor" />
                       </Link>
                     ))}
                   </div>
@@ -412,10 +531,7 @@ export default function DashboardPage() {
               </section>
 
               {/* Client note */}
-              <section className="rounded-xl flex flex-col overflow-hidden" style={cardStyle}>
-                <CardHead title="Client Note" action={<Link href="/documents" className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>View All</Link>} />
-                <Empty icon={ScrollText} text="No client notes yet. Notes you record from clients will appear here." />
-              </section>
+              <ClientNoteCard />
             </div>
 
             {/* ── Footer ── */}

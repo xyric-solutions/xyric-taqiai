@@ -15,52 +15,35 @@ interface HandlerResponse {
 // CORE LAWYER PERSONALITY (shared by all handlers)
 // ============================================
 
-const LAWYER_PERSONALITY = `You are a SENIOR PAKISTANI ADVOCATE with 25+ years of Supreme Court and High Court practice.
+const LAWYER_PERSONALITY = `You are a SENIOR PAKISTANI ADVOCATE with 25+ years of Supreme Court and High Court practice, talking to a client in an ongoing CONVERSATION (like a real chat — think how ChatGPT replies, naturally and to the point).
 
-PERSONALITY & BEHAVIOR:
-- You speak with authority and confidence like a real practicing lawyer
-- You give ACTIONABLE legal advice, not textbook theory
-- You think strategically - always consider the client's best outcome
-- You anticipate counter-arguments and prepare for them
-- You know court procedures from real experience, not books
-- You speak directly: "File this under Section X" not "You may consider filing..."
-- Always structure your response clearly with headings and numbered points
+HOW TO TALK (most important):
+- Reply CONVERSATIONALLY, in natural prose. Answer EXACTLY what was asked — nothing more.
+- This is a back-and-forth chat. READ the previous conversation. If the latest message is a follow-up, clarification, or a short question, just answer THAT — do NOT restart with a full case analysis and do NOT repeat what you already said.
+- Give clear, practical guidance FIRST, like a senior lawyer explaining things to a client across the table.
+- Match the length to the question: a small question gets a short answer (2-4 lines); a big "what should I do about X" gets a fuller answer.
+- Speak directly and confidently: "File a suit for declaration under Section 42" — not "You may consider...".
+- Be honest if the case is weak.
 
+WHAT NOT TO DO:
+- Do NOT force a fixed template (LEGAL POSITION / YOUR RIGHTS / PROCEDURE / DOCUMENTS …) onto every reply. Use a heading or two ONLY when the answer genuinely needs structure (e.g. a step-by-step procedure). Otherwise just talk.
+- Do NOT append a "CITATIONS" list to every reply. Do NOT dump case-law (judgments) unless the user actually asks for case-law / precedent / authorities, or it truly strengthens the specific answer.
+- Do NOT repeat a greeting, do NOT repeat the question back, no filler.
 
-RESPONSE LENGTH: Keep your response SHORT and CONCISE. Maximum 200-300 words.
-- Use bullet points, not long paragraphs
-- Give direct answers, skip unnecessary introductions
-- Do NOT repeat the question back
-- Do NOT write lengthy greetings
-- Jump straight to the legal guidance
-RESPONSE STRUCTURE (keep each section 1-2 lines max):
-1. LEGAL POSITION: Specific sections that apply (1-2 lines)
-2. YOUR RIGHTS: Key rights in bullet points
-3. PROCEDURE: Step-by-step in numbered list (keep brief)
-4. DOCUMENTS NEEDED: Simple bullet list
-5. COURT/FORUM: Which court (one line)
-6. TIMELINE & COSTS: Brief estimate
-7. WARNING: Key risk if any (one line)
+CITING LAW:
+- When a specific statute is the answer, name it inline and specifically: "under Section 42 of the Specific Relief Act, 1877" or "Section 302 PPC" — not "relevant sections".
+- Name the specific court/forum when relevant: "Civil Judge Class-I", "Family Court", "Rent Controller" — not "competent court".
+- Case-law (reported judgments) is shown to the client separately by the app. So only mention specific judgments when the user asks for precedent — otherwise focus on guidance.
 
-CRITICAL RULES:
-- NEVER say "I am an AI" or "I cannot provide legal advice" at the START. Give the advice FIRST.
-- ALWAYS cite SPECIFIC sections (not "relevant sections of PPC" but "Section 302 PPC")
-- ALWAYS mention the specific COURT to approach (not "competent court" but "Civil Judge Class-I" or "Family Court")
-- Include PRACTICAL tips a real lawyer would give
-- If the user's case is weak, honestly tell them
-- BE CONCISE. Avoid filler words. No lengthy introductions or conclusions.
-- At the VERY END only, add one line: "⚖️ AI guidance - consult a licensed advocate for formal representation."
-- NEVER exceed 300 words in total response.
+ON RECENT / AMENDED LAWS:
+- Pakistani laws change often (new Acts, amendments, provincial rules). If a provision may have been amended recently or a newer law likely governs, SAY SO plainly and tell the client to verify the latest amendment / notification — do NOT state an outdated position as if it is certainly current.
 
-MANDATORY CITATIONS RULE (S04-02):
-Every response MUST end with a "📚 CITATIONS:" block listing ALL laws and cases referenced:
-Format:
-📚 CITATIONS:
-• Section [X] [Act] — [one-line description]
-• [Case Name] ([Year] [Court] [Reference]) — [one-line significance]
-Minimum 2 citations required. Example:
-• Section 302 PPC — Qatl-e-Amd (intentional murder), punishable by death or life imprisonment
-• Tariq Bashir vs State (2005 SCMR 1108) — Bail rule: bail is the rule, jail is the exception`;
+FORMATTING (the app shows PLAIN TEXT — it does NOT render Markdown):
+- No "#", "##", "**bold**", "*italics*", or backticks. If you use a heading, write it in plain CAPITALS with a colon, e.g. "PROCEDURE:". For lists use "- " or "1.".
+
+CLOSING:
+- Do NOT say "I am an AI" at the start. Give the guidance first.
+- End with one short line only: "⚖️ AI guidance — consult a licensed advocate for formal representation."`;
 
 // ============================================
 // MAIN ROUTER
@@ -657,13 +640,137 @@ First identify what area of law this falls under, then provide comprehensive adv
 // BUILD FINAL AI PROMPT
 // ============================================
 
+type ResponseLanguage = "english" | "roman-urdu" | "urdu-script";
+
+function userQuestionFrom(input: string): string {
+  const marker = "USER QUESTION:";
+  const idx = input.lastIndexOf(marker);
+  return idx !== -1 ? input.slice(idx + marker.length).trim() : input;
+}
+
+function detectResponseLanguage(input: string): ResponseLanguage {
+  const question = userQuestionFrom(input).trim();
+  if (/[\u0600-\u06FF]/.test(question)) return "urdu-script";
+
+  const tokens = question.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  if (!tokens.length) return "english";
+
+  // A "strong" Roman-Urdu word that, on its own, settles the language.
+  const strongRomanUrdu = /\b(kya|kiya|kyun|kyu|kaise|kaisay|kese|kaisi|kaisy|mujhe|mujhy|mojhy|chahiye|chahye|chye|batao|btao|bataye|bataiye|batain|samjhao|samjhaye|matlab|kaunsa|konsa|kitna|kitni|kitne|karoo|karo|karein|karna|karwana|nahi|nahin|nhi|agar|agr|zarurat|zaroorat|tareeqa|tareeka|tariqa|tarika)\b/i.test(question);
+  if (strongRomanUrdu) return "roman-urdu";
+
+  // High-signal Roman-Urdu words (postpositions, pronouns, verbs, question words
+  // and common spelling variants). Deliberately EXCLUDES tokens that are also
+  // ordinary English words (main, men, par, to, is, us…) so they don't misfire.
+  const romanUrduWords = new Set([
+    "aap", "ap", "ka", "ke", "ki", "ko", "se", "sy", "mein", "mai", "tak", "pe", "ne",
+    "hai", "hain", "ha", "ho", "hota", "hoti", "hote", "hona", "tha", "thi", "thay",
+    "kar", "kr", "krna", "kro", "kahan", "kaha", "kaun", "kab",
+    "mera", "mere", "meri", "mery", "hamara", "hamari", "apna", "apni",
+    "liye", "wala", "wali", "raha", "rahi", "rahe", "gaya", "gayi", "gaye",
+    "sakta", "sakte", "sakti", "lena", "lene", "leny", "lyny", "lein", "dena", "dene",
+    "dilana", "milna", "milta", "milti", "milega", "tarah", "samajh", "chahta", "chahti",
+    "ye", "yeh", "wo", "woh", "kuch", "koi", "jo", "jab",
+  ]);
+
+  // Common English structural words that almost never appear in Roman Urdu.
+  // (Legal loanwords like court/file/claim/process are intentionally left out —
+  // Roman-Urdu speakers use them too, so they shouldn't count as English.)
+  const englishWords = new Set([
+    "the", "a", "an", "is", "are", "was", "were", "am", "be", "been", "being",
+    "how", "what", "when", "where", "which", "who", "whom", "why", "whose",
+    "can", "could", "should", "would", "will", "shall", "may", "might", "must",
+    "do", "does", "did", "have", "has", "had",
+    "of", "for", "from", "with", "by", "into", "about", "this", "that", "these", "those",
+    "please", "explain", "tell", "i", "my", "you", "your", "his", "her", "and", "or", "but", "if",
+  ]);
+
+  let roman = 0;
+  let eng = 0;
+  for (const t of tokens) {
+    if (romanUrduWords.has(t)) roman++;
+    else if (englishWords.has(t)) eng++;
+  }
+
+  // Any Roman-Urdu marker that isn't clearly outnumbered by English → Roman Urdu.
+  if (roman >= 1 && roman >= eng) return "roman-urdu";
+  return "english";
+}
+
+export function buildLanguageRule(userInput: string): string {
+  const language = detectResponseLanguage(userInput);
+
+  if (language === "roman-urdu") {
+    return `STRICT LANGUAGE RULE (VIOLATION = FAILURE):
+- The user's question is in Roman Urdu.
+- You MUST reply in ROMAN URDU only: Urdu words written with English letters.
+- Do NOT write Urdu script.
+- Translate section headings too. Use headings like "Qanooni Position", "Aap ke Rights", "Procedure", "Documents", "Court/Forum", "Warning", and "Citations".
+- Ignore the language used in earlier chat history. Match ONLY the latest user question after "USER QUESTION:".
+- Keep statute names, section numbers, case names, court names, and citations in English where standard.
+- The final disclaimer must also be in Roman Urdu.
+- CORRECT example: "Aap Family Court mein suit file kar sakte hain under Family Courts Act 1964."
+- WRONG: Replying fully in English when the user asked in Roman Urdu.
+
+Advocate:`;
+  }
+
+  if (language === "urdu-script") {
+    return `STRICT LANGUAGE RULE (VIOLATION = FAILURE):
+- The user's question is in Urdu script.
+- You MUST reply in Urdu script.
+- Keep statute names, section numbers, case names, court names, and citations in English where standard.
+- Do NOT switch to Roman Urdu unless the user asks for Roman Urdu.
+- Ignore the language used in earlier chat history. Match ONLY the latest user question after "USER QUESTION:".
+- The final disclaimer must also be in Urdu script.
+
+Advocate:`;
+  }
+
+  return `STRICT LANGUAGE RULE (VIOLATION = FAILURE):
+- The user's question is in English.
+- You MUST reply in clear, professional ENGLISH only.
+- Do NOT switch to Roman Urdu or Urdu script unless the user asks in that language.
+- Ignore the language used in earlier chat history. Match ONLY the latest user question after "USER QUESTION:".
+
+Advocate:`;
+}
+
+/**
+ * A short, high-priority language directive placed at the VERY TOP of the prompt.
+ * The detailed instructions below are all written in English, which makes Gemini
+ * Flash drift into English even when the closing rule says otherwise. Stating the
+ * output language first AND last is what reliably forces the model to obey it.
+ */
+function buildLanguageBanner(userInput: string): string {
+  const language = detectResponseLanguage(userInput);
+
+  if (language === "roman-urdu") {
+    return `🌐 OUTPUT LANGUAGE = ROMAN URDU (Urdu written in English letters).
+The user asked in Roman Urdu, so your ENTIRE reply — every heading, every bullet, and the final disclaimer — MUST be in Roman Urdu. The English text in the instructions below is ONLY for your understanding; do NOT reply in English. Keep statute names, section numbers, case names, court names and citations in English where standard.
+
+`;
+  }
+
+  if (language === "urdu-script") {
+    return `🌐 OUTPUT LANGUAGE = اردو (Urdu script).
+The user asked in Urdu, so your ENTIRE reply — every heading, every bullet, and the final disclaimer — MUST be in Urdu script. The English text in the instructions below is ONLY for your understanding; do NOT reply in English. Keep statute names, section numbers, case names, court names and citations in English where standard.
+
+`;
+  }
+
+  return `🌐 OUTPUT LANGUAGE = ENGLISH. Reply only in clear professional English.
+
+`;
+}
+
 export function buildAIPrompt(
   userInput: string,
   history: { role: string; content: string }[] = []
 ): string {
   const handler = handleUserInput(userInput);
 
-  let fullPrompt = handler.systemPrompt + "\n\n";
+  let fullPrompt = buildLanguageBanner(userInput) + handler.systemPrompt + "\n\n";
 
   // Add conversation history
   if (history.length > 0) {
@@ -678,17 +785,17 @@ export function buildAIPrompt(
     fullPrompt += "---\n\n";
   }
 
-  fullPrompt += `Client: ${handler.formattedInput}\n\n`;
+  // First message in a thread gets the structured "analyse this matter" framing.
+  // Follow-ups use the raw question so the model continues the conversation
+  // instead of restarting a full analysis every turn.
+  const isFollowUp = history.length > 0;
+  fullPrompt += `Client: ${isFollowUp ? userInput : handler.formattedInput}\n\n`;
 
-  fullPrompt += `STRICT LANGUAGE RULE (VIOLATION = FAILURE):
-- You MUST reply in ENGLISH only.
-- CORRECT example: "Hindu divorce in Pakistan is governed by the Hindu Marriage Act 2017. Grounds for divorce are provided in Section 12."
-- WRONG: Writing in Roman Urdu like "Hindu divorce Pakistan mein Hindu Marriage Act ke tehat hota hai..."
-- WRONG: Writing in Urdu script like "ہندو طلاق پاکستان میں..."
-- All responses must be in clear, professional English.
-- This rule must NEVER be broken. ALWAYS respond in English.
+  if (isFollowUp) {
+    fullPrompt += "(This is a follow-up in an ongoing conversation. Answer this specific message conversationally and briefly — do not repeat earlier guidance or restart a full analysis.)\n\n";
+  }
 
-Advocate:`;
+  fullPrompt += buildLanguageRule(userInput);
 
   return fullPrompt;
 }

@@ -9,9 +9,28 @@ import {
   Languages, Calculator, BookMarked, FilePlus, Users, ShieldAlert,
   Scale, BookOpen, Library, Building2, Globe, Landmark,
   Gavel, LayoutDashboard, Calendar, Handshake,
-  HeartHandshake,
+  HeartHandshake, FileText, ScanLine, Mic,
 } from "lucide-react";
 import { toggleSidebarCollapsed } from "@/lib/sidebar-store";
+import { DOCUMENT_SUGGESTIONS } from "@/lib/document-suggestions";
+
+// Map each document category to its drafting page + display title
+const CAT_META: Record<string, { route: string; title: string }> = {
+  "affidavit":          { route: "/affidavits",         title: "Affidavits" },
+  "agreement":          { route: "/agreements",         title: "Agreements" },
+  "application":        { route: "/applications",       title: "Applications" },
+  "family-law":         { route: "/family-law",         title: "Family Law" },
+  "criminal-law":       { route: "/criminal-law",       title: "Criminal Law" },
+  "property-law":       { route: "/property-law",       title: "Property Law" },
+  "civil-law":          { route: "/civil-law",          title: "Civil Law" },
+  "corporate-law":      { route: "/corporate-law",      title: "Corporate Law" },
+  "tax-law":            { route: "/tax-law",            title: "Tax Law" },
+  "immigration-law":    { route: "/immigration-law",    title: "Immigration" },
+  "constitutional-law": { route: "/constitutional-law", title: "Constitutional Law" },
+  "non-muslim-laws":    { route: "/non-muslim-laws",    title: "Non-Muslim Laws" },
+  "power-of-attorney":  { route: "/power-of-attorney",  title: "Power of Attorney" },
+  "court-cases":        { route: "/court-cases",        title: "Court Cases" },
+};
 
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard":                        "Dashboard",
@@ -33,6 +52,8 @@ const PAGE_TITLES: Record<string, string> = {
   "/constitutional-law":               "Constitutional Law",
   "/non-muslim-laws":                  "Non-Muslim Laws",
   "/power-of-attorney":                "Power of Attorney",
+  "/voice-case":                       "Voice Case",
+  "/copy-from-photo":                  "Copy from Photo",
   "/documents":                        "My Documents",
   "/translate":                        "Translate",
   "/settings":                         "Settings",
@@ -45,6 +66,8 @@ const SEARCH_ITEMS = [
   { label: "AI Advisor",     href: "/ai-advisor",   category: "Main",       icon: Bot,            keywords: ["ai","advisor","question","ask","mushwara","salah"] },
   { label: "Case Law",       href: "/case-law",     category: "Research",   icon: BookOpen,       keywords: ["case law","judgment","court","scmr","pld","faisla"] },
   { label: "Statute Search", href: "/statute-search", category: "Research", icon: Library,        keywords: ["statute","law","act","ordinance","qanoon","dhara"] },
+  { label: "Voice Case",     href: "/voice-case",   category: "Draft",      icon: Mic,            keywords: ["voice","case","discussion","record","audio","client","mic","awaz","guftagu","talk","meeting"] },
+  { label: "Copy from Photo",href: "/copy-from-photo",category: "Draft",     icon: ScanLine,       keywords: ["copy","photo","image","picture","scan","ocr","type from image","tasveer","naqal","same to same"] },
   { label: "Affidavits",     href: "/affidavits",   category: "Draft",      icon: PenLine,        keywords: ["affidavit","halaf nama","sworn"] },
   { label: "Agreements",     href: "/agreements",   category: "Draft",      icon: Handshake,      keywords: ["agreement","contract","muaahida"] },
   { label: "Applications",   href: "/applications", category: "Draft",      icon: FilePlus,       keywords: ["application","darkhast","arzi"] },
@@ -66,15 +89,49 @@ const SEARCH_ITEMS = [
   { label: "Settings",       href: "/settings",     category: "Settings",   icon: Settings,       keywords: ["settings","profile","account","password"] },
 ];
 
-function useGlobalSearch(query: string) {
+type SearchResult = {
+  label: string;
+  href: string;
+  category: string;
+  icon: typeof Home;
+};
+
+function useGlobalSearch(query: string): SearchResult[] {
   if (!query.trim()) return [];
   const q = query.toLowerCase();
-  return SEARCH_ITEMS.filter(
+
+  // 1) Pages / navigation
+  const pages: SearchResult[] = SEARCH_ITEMS.filter(
     (item) =>
       item.label.toLowerCase().includes(q) ||
       item.category.toLowerCase().includes(q) ||
       item.keywords.some((k) => k.includes(q))
-  ).slice(0, 8);
+  ).map(({ label, href, category, icon }) => ({ label, href, category, icon }));
+
+  // 2) Documents / cases — only for queries of 2+ chars, navigates to the
+  //    category page with the document pre-filled in the draft box.
+  const docs: SearchResult[] = [];
+  if (q.length >= 2) {
+    const seen = new Set<string>();
+    for (const doc of DOCUMENT_SUGGESTIONS) {
+      const meta = CAT_META[doc.cat];
+      if (!meta || seen.has(doc.label)) continue;
+      const matches =
+        doc.label.toLowerCase().includes(q) ||
+        doc.kw.some((k) => k.startsWith(q) || k.includes(q)) ||
+        doc.label.toLowerCase().split(/[\s\-()/,]+/).some((w) => w.length > 1 && w.startsWith(q));
+      if (!matches) continue;
+      seen.add(doc.label);
+      docs.push({
+        label: doc.label,
+        href: `${meta.route}?draft=${encodeURIComponent(doc.label)}`,
+        category: meta.title,
+        icon: FileText,
+      });
+    }
+  }
+
+  return [...pages.slice(0, 6), ...docs.slice(0, 8)];
 }
 
 interface TopbarProps {

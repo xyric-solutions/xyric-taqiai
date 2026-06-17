@@ -129,10 +129,13 @@ ${incompleteHtml}
 
 Mandatory completion requirements:
 - Do not stop at "RESPECTFULLY SHEWETH:".
-- Add at least 7 complete numbered factual/legal paragraphs after "RESPECTFULLY SHEWETH:".
+- Prepare a complete professional court draft, not a short skeletal draft.
+- Add normally 12-18 complete numbered factual/legal/ground paragraphs after "RESPECTFULLY SHEWETH:" when the provided facts allow it.
+- Cover every necessary area that fits the document type: facts, detailed facts, jurisdiction/maintainability, limitation if relevant, grounds, legal grounds, interim relief if relevant, and final relief.
 - Add a full PRAYER clause where applicable.
 - Add verification and signature blocks where applicable.
 - If any detail is missing, use "___________"; do not omit the section.
+- Do not add irrelevant padding or invented facts merely to increase length.
 - Return ONLY complete valid HTML, no markdown or explanation.`;
 
   return cleanHtmlOutput(await tryGenerate(retryPrompt));
@@ -148,6 +151,21 @@ function todayFormatted(): string {
   const month = d.toLocaleString("en-US", { month: "long" });
   const year = d.getFullYear();
   return `${day}th day of ${month}, ${year}`;
+}
+
+function hasExplicitCourtName(userRequest: string, answers: Record<string, string>): boolean {
+  const answerHasCourt = Object.entries(answers).some(([key, value]) =>
+    Boolean(value?.trim()) && /\bcourt\b/i.test(key)
+  );
+  if (answerHasCourt) return true;
+
+  return /Court Name for document heading:\s*(?!_{3,}|\s*$).+/i.test(userRequest);
+}
+
+function blankInferredCourtHeading(html: string): string {
+  return html
+    .replace(/IN THE COURT OF(?: THE)?(?: HON'?BLE\s+)?[^<\n]{3,160}/i, "IN THE COURT OF ___________")
+    .replace(/IN THE HON'?BLE HIGH COURT OF[^<\n]{3,160}/i, "IN THE HON'BLE HIGH COURT OF ___________");
 }
 
 async function generateSmartDocument(
@@ -207,13 +225,37 @@ CRITICAL RULES:
 
 5. NEVER substitute document types. If user asked for agreement — write AGREEMENT, not affidavit.
 
-6. COURT DOCUMENTS must include:
-   - Header: IN THE COURT OF ___________ / IN THE HON'BLE HIGH COURT OF ___________
-   - Case title: [Petitioner] vs [Respondent]
-   - At least 7 numbered paragraphs after "RESPECTFULLY SHEWETH:"
-   - PRAYER CLAUSE with specific reliefs
-   - ADVOCATE for Petitioner / Applicant signature line
-   - Relevant law sections (PPC, CrPC, CPC, Constitution of Pakistan 1973)
+6. COURT DOCUMENTS (petitions, plaints/suits, bail, writ, appeal, revision, quashment, complaints) must follow this EXACT professional Pakistani structure, in this order:
+   a. CAUSE-TITLE / HEADING:
+      - IN THE COURT OF ___________ / IN THE HON'BLE HIGH COURT OF ___________ (use user's provided court + district/city exactly)
+      - Case number line on its own: e.g. "Bail Application No. _______ of 20__" / "Writ Petition No. _______ of 20__" / "Suit No. _______ of 20__" (correct document type, year blank as "20__" if not given)
+      - Statute line: "(Under Section ___ ...)" / "(Under Article 199 of the Constitution of Pakistan, 1973)" — use the correct enabling provision for the document type
+   b. MEMO OF PARTIES (case title): full description, one party per line —
+      "[Name] S/o [Father], R/o [Address] .......... Petitioner/Applicant/Plaintiff"
+      "VERSUS"
+      "[Name] S/o [Father], R/o [Address] .......... Respondent/Complainant/Defendant"
+      Use "___________" for any part not provided. Add "The State" as respondent in criminal matters when no private respondent is given.
+   c. Subject line naming the document: e.g. "APPLICATION FOR POST-ARREST BAIL UNDER SECTION 497 Cr.P.C."
+   d. "RESPECTFULLY SHEWETH:" followed by NUMBERED FACTS paragraphs (1, 2, 3 …) — introductory facts, chronology, FIR/case/order details, what happened and when. Facts only state WHAT happened; do NOT argue law here.
+   e. A SEPARATE "GROUNDS:" section after the facts — LETTERED paragraphs (a), (b), (c) … each a distinct legal argument (maintainability, jurisdiction, limitation if relevant, illegality/infirmity, merits, why relief is justified). This is where the law is argued — keep it distinct from Facts.
+   f. "PRAYER:" — "It is, therefore, most respectfully prayed that …" with specific, numbered reliefs tailored to the document type, plus "any other relief deemed fit may also be granted."
+   g. Date and place line, then signature block on the right:
+      "___________
+       ADVOCATE
+       for the Petitioner/Applicant"
+   h. VERIFICATION clause (for plaints, petitions, writs, applications on oath): a separate block —
+      "VERIFICATION:
+       Verified on oath at ___________ on this ___ day of ___________, 20__ that the contents of paras No. ___ to ___ are true and correct to the best of my knowledge and belief and nothing material has been concealed therefrom.
+       ___________
+       Petitioner / Deponent"
+   - Body length: develop fully — bail, writ, civil suit, appeal, quashment, revision, and contested petitions normally need 8-15 fact paragraphs plus well-reasoned grounds. Simple applications may be proportionately shorter.
+   - Do NOT add irrelevant filler, repeated paragraphs, or invented facts just to increase length. If a necessary fact is missing, keep "___________".
+   - Relevant law sections must be accurate (PPC, Cr.P.C., CPC, Qanun-e-Shahadat 1984, Constitution of Pakistan 1973, relevant special laws).
+   - NEVER assume Lahore, Karachi, Islamabad, or any other city if the user did not provide it.
+   - NEVER infer the court rank/designation from document type. Do not write Sessions Judge, Additional Sessions Judge, Civil Judge, Family Court, or High Court unless the user provided it. If court name or district/city is missing, use "___________".
+   - If judgments/citations are provided as supporting research, use them only to shape legally sound facts, grounds, and relief.
+   - DO NOT add a standalone reliance paragraph such as "In this regard, reliance is placed on..." or "principles laid down in..." unless the user expressly asks to cite authorities in the draft.
+   - DO NOT list supporting judgments merely because they were used to prepare the case.
 
 7. AFFIDAVITS must include:
    - Title: AFFIDAVIT
@@ -260,6 +302,9 @@ Generate the complete document as HTML now:`;
     html = await regenerateCompleteDocument(prompt, html);
   }
   html = repairIncompleteCourtDocument(html);
+  if (!hasExplicitCourtName(userRequest, answers)) {
+    html = blankInferredCourtHeading(html);
+  }
   if (isIncompleteLegalDocument(html)) {
     throw new Error("The AI returned an incomplete document. Please generate again.");
   }
@@ -328,7 +373,10 @@ FOR APPLICATIONS (FIR, Bail, Court Application, NOC, Character Certificate, DC O
   Also ask: authority_name (to whom — police station / court / DC office), subject_matter (what the application is about), facts (brief description of case/incident)
 
 FOR COURT CASES / PETITIONS (Bail, Writ, Civil Suit, Criminal Complaint, Appeal, Notice):
-  Always ask: petitioner_name, respondent_name, court_name, case_facts, relief_sought
+  Always ask: petitioner_name, petitioner_father_name, petitioner_cnic, petitioner_address, respondent_name, court_name, district_city, case_facts, relief_sought
+  The court heading must be based on court_name + district_city. Never default to Lahore.
+  If court_name is missing, ask for it or leave it blank. Do not infer Sessions Judge/Civil Judge/High Court from the document type.
+  If respondent is a private person and details are missing, also ask: respondent_father_name, respondent_cnic, respondent_address
   For bail: section_charged, police_station, date_of_arrest
   For legal notice: notice_subject, demand, deadline_days
 
@@ -350,10 +398,10 @@ STRICT RULES:
 4. Write question labels in the SAME LANGUAGE the user used (Urdu, Roman Urdu, or English).
 5. Field IDs must be snake_case English (e.g. "seller_name", "property_address", "rent_amount").
 6. Placeholders must be realistic Pakistani examples — written in the DOCUMENT LANGUAGE:
-   - If language is English: placeholders in English (e.g. "Muhammad Ahmed", "House No. 12, Gulberg, Lahore", "35201-1234567-1", "Rs. 25,000")
+   - If language is English: placeholders in English (e.g. "Muhammad Ahmed", "House No. 12, Civil Lines, Faisalabad", "35201-1234567-1", "Rs. 25,000")
    - If language is Urdu: placeholders in Urdu script (e.g. "محمد احمد", "مکان نمبر ۱۲، گلبرگ، لاہور", "۳۵۲۰۱-۱۲۳۴۵۶۷-۱", "۲۵،۰۰۰ روپے")
    - Document language is: ${language === "ur" ? "URDU — write all placeholders in Urdu script" : "ENGLISH — write all placeholders in English"}
-7. For LONG NARRATIVE fields (brief facts, grounds, reasons, details, description, relief sought, statement of the case, etc.), the placeholder must be a COMPLETE multi-sentence example that walks the lawyer step-by-step through everything to write — do NOT cut it off mid-sentence. Show the full structure using bracketed blanks they replace, e.g. "Marriage was solemnized on [date] at [place]. Haq Mehr was agreed at [amount] as per Nikah Nama. The husband has refused to pay the Haq Mehr despite repeated demands on [dates]. A legal notice was sent on [date] but no payment was made. The petitioner therefore seeks recovery of Rs. [amount] along with costs." Always finish every sentence.
+7. For LONG NARRATIVE fields (brief facts, grounds, reasons, details, description, relief sought, statement of the case, etc.), keep the placeholder SHORT — only 1 to 2 sentences covering the main points, using bracketed blanks the lawyer replaces. Do NOT write long, multi-line paragraphs. e.g. "Marriage was solemnized on [date]. The husband refused to pay the agreed Haq Mehr of Rs. [amount] despite repeated demands, so the petitioner seeks its recovery." Keep it brief and finish every sentence.
 
 SECTION NUMBER VALIDATION:
 - If the user mentioned a specific law section (e.g. "Section 302", "497 CrPC", "420 PPC"), verify if it is correct for the document type.
@@ -417,7 +465,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, nothing else:
           { id: "full_name", label: "Full Name / پورا نام", placeholder: "e.g. Muhammad Ahmed", required: true },
           { id: "father_name", label: "Father's Name / والد کا نام", placeholder: "e.g. Muhammad Ali", required: true },
           { id: "cnic", label: "CNIC Number", placeholder: "e.g. 35201-1234567-1", required: true },
-          { id: "address", label: "Complete Address / مکمل پتہ", placeholder: "e.g. House 12, Street 4, Lahore", required: true },
+          { id: "address", label: "Complete Address / مکمل پتہ", placeholder: "e.g. House 12, Street 4, Faisalabad", required: true },
         ];
       }
 
