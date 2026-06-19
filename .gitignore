@@ -45,6 +45,11 @@ next-env.d.ts
 
 # local database (recreate on deploy via prisma migrate)
 /prisma/dev.db
+/prisma/*.bak-*
+*.db.bak-*
+
+# local dev logs
+.next-dev.log
 /prisma/*.db-journal
 
 # runtime logs

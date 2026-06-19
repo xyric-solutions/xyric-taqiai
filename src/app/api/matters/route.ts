@@ -42,6 +42,7 @@ export async function POST(req: Request) {
     status?: string;
     role?: string;
     clientName?: string;
+    clientPhone?: string;
     opponentName?: string;
     judgeName?: string;
     dateFiled?: string;
@@ -79,6 +80,7 @@ export async function POST(req: Request) {
       status: body.status || "active",
       role: body.role?.trim() || "",
       clientName: body.clientName.trim(),
+      clientPhone: body.clientPhone?.trim() || null,
       opponentName: body.opponentName?.trim() || null,
       judgeName: body.judgeName?.trim() || null,
       dateFiled: body.dateFiled ? new Date(body.dateFiled) : null,

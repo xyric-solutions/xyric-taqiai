@@ -54,11 +54,13 @@ export async function PATCH(req: Request, ctx: RouteContext) {
     status?: string;
     role?: string;
     clientName?: string;
+    clientPhone?: string;
     opponentName?: string;
     judgeName?: string;
     dateFiled?: string | null;
     nextHearing?: string | null;
     notes?: string;
+    documentIds?: string[];
   };
 
   try {
@@ -84,7 +86,11 @@ export async function PATCH(req: Request, ctx: RouteContext) {
       ...(body.status !== undefined && { status: body.status }),
       ...(body.role !== undefined && { role: body.role }),
       ...(body.clientName !== undefined && { clientName: body.clientName }),
+      ...(body.clientPhone !== undefined && { clientPhone: body.clientPhone || null }),
       ...(body.opponentName !== undefined && { opponentName: body.opponentName || null }),
+      ...(body.documentIds !== undefined && {
+        documentIds: JSON.stringify(Array.isArray(body.documentIds) ? body.documentIds.filter((d) => typeof d === "string") : []),
+      }),
       ...(body.judgeName !== undefined && { judgeName: body.judgeName || null }),
       ...(body.dateFiled !== undefined && {
         dateFiled: body.dateFiled ? new Date(body.dateFiled) : null,

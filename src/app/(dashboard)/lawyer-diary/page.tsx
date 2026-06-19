@@ -20,6 +20,7 @@ interface DiaryEntry {
   stage: string;
   proceeding: string | null;
   nextDate: string | null;
+  clientPhone: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -74,7 +75,7 @@ function toInputDate(dateStr: string | null): string {
 }
 
 function emptyForm() {
-  return { caseNumber: "", lastDate: "", title: "", courtName: "", stage: "Arguments", proceeding: "", nextDate: "" };
+  return { caseNumber: "", lastDate: "", title: "", courtName: "", stage: "Arguments", proceeding: "", nextDate: "", clientPhone: "" };
 }
 
 // ─────────────────────────────────────────────
@@ -138,6 +139,14 @@ function DiaryForm({ initial, onSubmit, onCancel, saving, isEdit }: DiaryFormPro
         <div>
           <label className={labelCls}>Next Date</label>
           <input type="date" value={form.nextDate} onChange={(e) => set("nextDate", e.target.value)} className={inputCls} />
+        </div>
+      </div>
+
+      {/* Row: Client Phone */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className={labelCls}>Client Phone</label>
+          <input value={form.clientPhone} onChange={(e) => set("clientPhone", e.target.value)} placeholder="e.g. 03XX-XXXXXXX" className={inputCls} />
         </div>
       </div>
 
@@ -323,6 +332,7 @@ export default function LawyerDiaryPage() {
                     stage: editingEntry.stage,
                     proceeding: editingEntry.proceeding ?? "",
                     nextDate: toInputDate(editingEntry.nextDate),
+                    clientPhone: editingEntry.clientPhone ?? "",
                   }
                 : undefined
             }
@@ -428,6 +438,9 @@ export default function LawyerDiaryPage() {
                           {/* Title */}
                           <td className="px-4 py-3">
                             <span className="font-semibold text-slate-800 leading-snug">{entry.title}</span>
+                            {entry.clientPhone && (
+                              <span className="block text-[11px] text-slate-400 mt-0.5">📞 {entry.clientPhone}</span>
+                            )}
                           </td>
 
                           {/* Court Name */}

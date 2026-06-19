@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
-  const { caseNumber, lastDate, title, courtName, stage, proceeding, nextDate } = body;
+  const { caseNumber, lastDate, title, courtName, stage, proceeding, nextDate, clientPhone } = body;
 
   if (!title || !courtName || !stage) {
     return NextResponse.json({ error: "Title, court name, and stage are required" }, { status: 400 });
@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
       stage,
       proceeding: proceeding || null,
       nextDate: nextDate ? new Date(nextDate) : null,
+      clientPhone: clientPhone || null,
     },
   });
 

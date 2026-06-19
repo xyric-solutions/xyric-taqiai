@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
+import { getAllDocuments, type SavedDocument } from "@/lib/document-store";
 import {
   Briefcase,
   Plus,
@@ -10,6 +12,7 @@ import {
   Calendar,
   CalendarDays,
   User,
+  Phone,
   Scale,
   Edit2,
   Archive,
@@ -18,6 +21,7 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
+  Eye,
   AlertCircle,
   Clock,
   Gavel,
@@ -50,11 +54,13 @@ interface Matter {
   status: string;
   role: string;
   clientName: string;
+  clientPhone: string | null;
   opponentName: string | null;
   judgeName: string | null;
   dateFiled: string | null;
   nextHearing: string | null;
   notes: string | null;
+  documentIds: string;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -195,6 +201,7 @@ function emptyForm() {
     status: "active",
     role: "",
     clientName: "",
+    clientPhone: "",
     opponentName: "",
     judgeName: "",
     dateFiled: "",
@@ -336,6 +343,19 @@ function MatterForm({ initial, onSubmit, onCancel, saving, title }: MatterFormPr
             value={form.opponentName}
             onChange={(e) => set("opponentName", e.target.value)}
             placeholder="Opposing party"
+            className={inputCls}
+          />
+        </div>
+      </div>
+
+      {/* Row: Client Phone */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className={labelCls}>Client Phone</label>
+          <input
+            value={form.clientPhone}
+            onChange={(e) => set("clientPhone", e.target.value)}
+            placeholder="e.g. 03XX-XXXXXXX"
             className={inputCls}
           />
         </div>
@@ -566,6 +586,31 @@ function MatterCard({ matter, allMatters, onEdit, onArchive, onNoteSave, onHeari
   const [adjournSaving, setAdjournSaving] = useState(false);
   const [adjournError, setAdjournError] = useState("");
 
+  // Linked documents (stored as a JSON array string on the matter)
+  const [docIds, setDocIds] = useState<string[]>(() => {
+    try { const a = JSON.parse(matter.documentIds || "[]"); return Array.isArray(a) ? a : []; } catch { return []; }
+  });
+  const [allDocs, setAllDocs] = useState<SavedDocument[]>([]);
+  const [docsLoaded, setDocsLoaded] = useState(false);
+  const [showDocPicker, setShowDocPicker] = useState(false);
+
+  useEffect(() => {
+    if (expanded && !docsLoaded) {
+      getAllDocuments().then((d) => { setAllDocs(d); setDocsLoaded(true); }).catch(() => setDocsLoaded(true));
+    }
+  }, [expanded, docsLoaded]);
+
+  const saveDocIds = async (ids: string[]) => {
+    setDocIds(ids);
+    await fetch(`/api/matters/${matter.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentIds: ids }),
+    }).catch(() => {});
+  };
+  const attachedDocs = allDocs.filter((d) => docIds.includes(d.id));
+  const availableDocs = allDocs.filter((d) => !docIds.includes(d.id));
+
   const adjournCount = matter.hearings.filter(h => h.result?.toLowerCase().includes("adjourned")).length;
 
   const handleAdjournSubmit = async (e: React.FormEvent) => {
@@ -635,6 +680,12 @@ function MatterCard({ matter, allMatters, onEdit, onArchive, onNoteSave, onHeari
                 <span className="flex items-center gap-1">
                   <User className="h-3 w-3 text-[var(--text-tertiary)]" />
                   {matter.clientName}
+                </span>
+              )}
+              {matter.clientPhone && (
+                <span className="flex items-center gap-1">
+                  <Phone className="h-3 w-3 text-[var(--text-tertiary)]" />
+                  {matter.clientPhone}
                 </span>
               )}
               {matter.caseType && (
@@ -874,6 +925,78 @@ function MatterCard({ matter, allMatters, onEdit, onArchive, onNoteSave, onHeari
               </div>
             )}
           </div>
+
+          {/* Linked Documents */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-semibold text-[var(--text-secondary)] flex items-center gap-1.5">
+                <FileText className="h-3.5 w-3.5" />
+                Documents ({docIds.length})
+              </h4>
+              {!showDocPicker && (
+                <button
+                  onClick={() => setShowDocPicker(true)}
+                  className="flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add Document
+                </button>
+              )}
+            </div>
+
+            {showDocPicker && (
+              <div className="mb-2 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-2)] p-2">
+                <div className="flex items-center justify-between mb-1.5 px-1">
+                  <span className="text-xs font-semibold text-[var(--text-secondary)]">Link an existing document</span>
+                  <button onClick={() => setShowDocPicker(false)} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"><X className="h-3.5 w-3.5" /></button>
+                </div>
+                {!docsLoaded ? (
+                  <p className="text-xs text-[var(--text-tertiary)] px-1 py-2">Loading…</p>
+                ) : availableDocs.length === 0 ? (
+                  <p className="text-xs text-[var(--text-tertiary)] px-1 py-2">
+                    No more documents.{" "}
+                    <Link href="/documents" className="text-primary-600 hover:text-primary-700">Generate one →</Link>
+                  </p>
+                ) : (
+                  <div className="max-h-44 overflow-y-auto space-y-1">
+                    {availableDocs.map((d) => (
+                      <button key={d.id} onClick={() => { saveDocIds([...docIds, d.id]); setShowDocPicker(false); }}
+                        className="w-full flex items-center gap-2 p-2 rounded-lg text-left hover:bg-[var(--bg-surface-3)] transition-colors">
+                        <FileText className="h-3.5 w-3.5 text-[var(--text-tertiary)] flex-shrink-0" />
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-xs font-medium text-[var(--text-primary)] truncate">{d.title}</span>
+                          <span className="block text-[10px] text-[var(--text-tertiary)]">{d.category}</span>
+                        </span>
+                        <Plus className="h-3.5 w-3.5 text-primary-500 flex-shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {docIds.length === 0 ? (
+              <p className="text-xs text-[var(--text-tertiary)] italic">No documents linked yet</p>
+            ) : !docsLoaded ? (
+              <p className="text-xs text-[var(--text-tertiary)]">Loading documents…</p>
+            ) : (
+              <div className="space-y-2">
+                {attachedDocs.map((d) => (
+                  <div key={d.id} className="flex items-center gap-2.5 text-xs bg-[var(--bg-surface-2)] rounded-lg p-2.5 border border-[var(--border-default)]">
+                    <FileText className="h-3.5 w-3.5 text-[var(--text-tertiary)] flex-shrink-0" />
+                    <span className="flex-1 min-w-0">
+                      <span className="block font-medium text-[var(--text-primary)] truncate">{d.title}</span>
+                      <span className="block text-[10px] text-[var(--text-tertiary)]">{d.category}</span>
+                    </span>
+                    <Link href={`/documents/${d.id}`} className="p-1 rounded text-[var(--text-tertiary)] hover:text-primary-600" title="Open"><Eye className="h-3.5 w-3.5" /></Link>
+                    <button onClick={() => saveDocIds(docIds.filter((x) => x !== d.id))} className="p-1 rounded text-[var(--text-tertiary)] hover:text-red-600" title="Remove from case"><X className="h-3.5 w-3.5" /></button>
+                  </div>
+                ))}
+                {attachedDocs.length < docIds.length && (
+                  <p className="text-[10px] text-[var(--text-tertiary)] italic">{docIds.length - attachedDocs.length} linked document(s) no longer available</p>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </Card>
@@ -1096,7 +1219,7 @@ export default function ChamberPage() {
         <div>
           <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2.5">
             <Briefcase className="h-6 w-6 text-primary-600" />
-            Chamber
+            Chamber Management
           </h1>
           <p className="text-[var(--text-tertiary)] text-sm mt-1">
             Manage your court matters, hearings, and case notes
@@ -1139,6 +1262,7 @@ export default function ChamberPage() {
                     status: editingMatter.status ?? "active",
                     role: editingMatter.role ?? "",
                     clientName: editingMatter.clientName,
+                    clientPhone: editingMatter.clientPhone ?? "",
                     opponentName: editingMatter.opponentName ?? "",
                     judgeName: editingMatter.judgeName ?? "",
                     dateFiled: toInputDate(editingMatter.dateFiled),

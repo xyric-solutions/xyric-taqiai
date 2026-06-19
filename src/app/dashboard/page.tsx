@@ -12,18 +12,26 @@ import {
   type ClientNote,
 } from "@/lib/client-notes-store";
 import {
-  CalendarPlus, CalendarDays, FileText, BookMarked, FolderCheck,
+  CalendarPlus, CalendarDays, CalendarClock, FileText, BookMarked, FolderCheck,
   AlertTriangle, Clock, FilePen, Search, Languages, Calculator,
-  PenLine, Star, ArrowRight, Sparkles, Scale, BadgeCheck, Paperclip, Mic,
-  Send, ShieldCheck, Bookmark, ScrollText, ScanLine, Library,
-  Plus, Trash2, X, User,
+  PenLine, Star, ArrowRight, Scale, BadgeCheck, Paperclip, Mic,
+  Send, ShieldCheck, Bookmark, ScrollText, ScanLine, Library, Briefcase,
+  Plus, Trash2, X, User, Gavel,
 } from "lucide-react";
 
 /* ───────────────────────────── Data ───────────────────────────── */
 
-type CauseItem = { time: string; title: string; ref: string; court: string; status: string; next: string };
+// A hearing normalised from any of the three case systems.
+type Hearing = {
+  id: string;
+  title: string;
+  court: string;
+  ref: string;
+  date: string;            // ISO date
+  href: string;
+  source: "Case" | "Chamber" | "Diary";
+};
 
-// ── Live data from Chamber (/api/matters) ──
 interface MatterLite {
   id: string;
   title: string;
@@ -31,6 +39,21 @@ interface MatterLite {
   court: string;
   status: string;
   nextHearing: string | null;
+}
+
+interface DiaryLite {
+  id: string;
+  title: string;
+  courtName: string;
+  caseNumber: string | null;
+  stage: string;
+  nextDate: string | null;
+}
+
+function startOfToday(): number {
+  const t = new Date();
+  t.setHours(0, 0, 0, 0);
+  return t.getTime();
 }
 
 function isToday(dateStr: string | null): boolean {
@@ -44,14 +67,27 @@ function isToday(dateStr: string | null): boolean {
   );
 }
 
-const PILL_CLS: Record<string, string> = {
-  urgent:    "text-danger-500 bg-danger-500/10 border-danger-500/25",
-  upcoming:  "text-primary-400 bg-primary-500/10 border-primary-500/25",
-  completed: "text-success-500 bg-success-500/10 border-success-500/25",
+function dayDiff(dateStr: string): number {
+  const d = new Date(dateStr); d.setHours(0, 0, 0, 0);
+  return Math.round((d.getTime() - startOfToday()) / 86400000);
+}
+
+function countdownLabel(dateStr: string): string {
+  const n = dayDiff(dateStr);
+  if (n < 0) return `${Math.abs(n)} day${Math.abs(n) !== 1 ? "s" : ""} ago`;
+  if (n === 0) return "Today";
+  if (n === 1) return "Tomorrow";
+  return `In ${n} days`;
+}
+
+const SOURCE_BADGE: Record<Hearing["source"], string> = {
+  Case:    "text-primary-300 bg-primary-500/10 border-primary-500/25",
+  Chamber: "text-ai-400 bg-ai-500/10 border-ai-500/25",
+  Diary:   "text-warning-500 bg-warning-500/10 border-warning-500/25",
 };
 
 const ACTIONS = [
-  { label: "Draft Bail Application", sub: "CrPC 497 · AI assisted drafting",        icon: FilePen,    href: "/draft-review", featured: true },
+  { label: "Draft Bail Application", sub: "CrPC 497 · AI assisted drafting",        icon: FilePen,    href: "/criminal-law", featured: true },
   { label: "Voice Case",             sub: "Record client discussion · AI drafts it", icon: Mic,        href: "/voice-case" },
   { label: "Copy from Photo",        sub: "Photo of a document · AI types it out",   icon: ScanLine,   href: "/copy-from-photo" },
   { label: "Search Case Law",        sub: "Find judgments and citations",            icon: Search,     href: "/case-law" },
@@ -68,24 +104,6 @@ const ADVISOR = [
 ];
 
 /* ───────────────────────────── Bits ───────────────────────────── */
-
-function Spark({ accent, data }: { accent: string; data?: number[] }) {
-  if (!data || data.length < 2 || Math.max(...data) === Math.min(...data)) {
-    return (
-      <svg viewBox="0 0 100 32" preserveAspectRatio="none" className="w-full h-8 mt-2 block">
-        <line x1="0" y1="26" x2="100" y2="26" stroke="var(--border-default)" strokeWidth="1.5" strokeDasharray="3 4" vectorEffect="non-scaling-stroke" />
-      </svg>
-    );
-  }
-  const max = Math.max(...data), min = Math.min(...data), range = max - min || 1;
-  const line = data.map((d, i) => `${(i / (data.length - 1)) * 100},${30 - ((d - min) / range) * 24 - 3}`).join(" ");
-  return (
-    <svg viewBox="0 0 100 32" preserveAspectRatio="none" className="w-full h-8 mt-2 block">
-      <polygon points={`0,32 ${line} 100,32`} fill={accent} opacity="0.1" />
-      <polyline points={line} fill="none" stroke={accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
-}
 
 function Empty({ icon: Icon, text, cta, href }: { icon: React.ElementType; text: string; cta?: string; href?: string }) {
   return (
@@ -239,8 +257,10 @@ export default function DashboardPage() {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // ── Live data: Chamber matters, generated documents, saved case law ──
+  // ── Live data ──
+  const [user, setUser] = useState<{ name: string } | null>(null);
   const [matters, setMatters] = useState<MatterLite[]>([]);
+  const [diary, setDiary] = useState<DiaryLite[]>([]);
   const [docs, setDocs] = useState<SavedDocument[]>([]);
   const [saved, setSaved] = useState<SavedJudgment[]>([]);
   const docCount = docs.length;
@@ -249,18 +269,25 @@ export default function DashboardPage() {
   useEffect(() => {
     let active = true;
 
-    // Today's hearings — from Chamber
+    fetch("/api/auth/profile")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (active && data?.profile) setUser({ name: data.profile.name }); })
+      .catch(() => {});
+
     fetch("/api/matters")
       .then((res) => (res.ok ? res.json() : { matters: [] }))
       .then((data) => { if (active) setMatters(data.matters ?? []); })
       .catch(() => { if (active) setMatters([]); });
 
-    // Generated documents (DB + local)
+    fetch("/api/diary")
+      .then((res) => (res.ok ? res.json() : { entries: [] }))
+      .then((data) => { if (active) setDiary(data.entries ?? []); })
+      .catch(() => { if (active) setDiary([]); });
+
     getAllDocuments()
       .then((d) => { if (active) setDocs(d); })
       .catch(() => { if (active) setDocs([]); });
 
-    // Saved case law (localStorage) + live updates when bookmarks change
     const syncSaved = () => setSaved(getSavedJudgments());
     syncSaved();
     const unsub = onSavedJudgmentsChange(syncSaved);
@@ -268,53 +295,64 @@ export default function DashboardPage() {
     return () => { active = false; unsub(); };
   }, []);
 
-  // Most-recent first, top 5 for the dashboard cards
+  // ── Unified hearings from all three case systems ──
+  const hearings: Hearing[] = [
+    ...matters.map((m): Hearing | null => m.nextHearing ? {
+      id: `m_${m.id}`, title: m.title, court: m.court || "", ref: m.caseNo || "",
+      date: m.nextHearing, href: "/chamber", source: "Case",
+    } : null).filter(Boolean) as Hearing[],
+    ...diary.map((d): Hearing | null => d.nextDate ? {
+      id: `d_${d.id}`, title: d.title, court: d.courtName || "", ref: d.caseNumber || "",
+      date: d.nextDate, href: "/lawyer-diary", source: "Diary",
+    } : null).filter(Boolean) as Hearing[],
+  ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+  const todayHearings = hearings.filter((h) => isToday(h.date));
+  const futureHearings = hearings.filter((h) => dayDiff(h.date) >= 0);
+  const nextHearing = futureHearings[0] ?? null;
+  // What the cause list shows: today's hearings, else the next few upcoming.
+  const causeList = (todayHearings.length > 0 ? todayHearings : futureHearings).slice(0, 6);
+
+  const activeCases = matters.filter((m) => m.status !== "decided").length;
+
   const recentDrafts = [...docs].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5);
   const recentSaved = saved.slice(0, 5);
-
-  const todayMatters = matters.filter((m) => isToday(m.nextHearing));
 
   const STATS = [
     {
       label: "Hearings Today",
-      value: String(todayMatters.length),
-      note: todayMatters.length === 0 ? "Nothing scheduled" : todayMatters.length === 1 ? "1 hearing today" : `${todayMatters.length} hearings today`,
+      value: String(todayHearings.length),
+      note: todayHearings.length === 0 ? "Nothing scheduled" : todayHearings.length === 1 ? "1 hearing" : `${todayHearings.length} hearings`,
       icon: CalendarDays, accent: "#06b6d4", iconCls: "text-primary-400 bg-primary-500/10",
     },
     {
-      label: "Drafts Pending Review",
-      value: String(docCount),
-      note: docCount === 0 ? "Nothing pending" : docCount === 1 ? "1 draft" : `${docCount} drafts`,
-      icon: FileText, accent: "#a78bfa", iconCls: "text-ai-500 bg-ai-500/10",
+      label: "Active Cases",
+      value: String(activeCases),
+      note: activeCases === 0 ? "No active cases" : "In progress",
+      icon: Briefcase, accent: "#a78bfa", iconCls: "text-ai-500 bg-ai-500/10",
     },
     {
-      label: "Case Law Saved",
-      value: String(savedCount),
-      note: savedCount === 0 ? "None saved yet" : savedCount === 1 ? "1 judgment" : `${savedCount} judgments`,
-      icon: BookMarked, accent: "#10b981", iconCls: "text-success-500 bg-success-500/10",
-    },
-    {
-      label: "Documents Ready",
+      label: "Documents",
       value: String(docCount),
       note: docCount === 0 ? "None yet" : docCount === 1 ? "1 document" : `${docCount} documents`,
       icon: FolderCheck, accent: "#f59e0b", iconCls: "text-warning-500 bg-warning-500/10",
     },
+    {
+      label: "Case Law Saved",
+      value: String(savedCount),
+      note: savedCount === 0 ? "None saved" : savedCount === 1 ? "1 judgment" : `${savedCount} judgments`,
+      icon: BookMarked, accent: "#10b981", iconCls: "text-success-500 bg-success-500/10",
+    },
   ];
 
-  const CAUSE_LIST: CauseItem[] = todayMatters.map((m) => ({
-    time: "Today",
-    title: m.title,
-    ref: m.caseNo ?? "—",
-    court: m.court || "—",
-    status: "urgent",
-    next: "Hearing today",
-  }));
-
   const now = new Date();
+  const displayName = user?.name ? user.name : "Advocate";
   const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 17 ? "Good afternoon" : "Good evening";
   const gregorian = now.toLocaleDateString("en-PK", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   let hijri = "";
   try { hijri = new Intl.DateTimeFormat("en-u-ca-islamic", { day: "numeric", month: "long", year: "numeric" }).format(now) + " AH"; } catch { hijri = ""; }
+
+  const fmtHearingDate = (iso: string) => new Date(iso).toLocaleDateString("en-PK", { weekday: "short", day: "numeric", month: "short" });
 
   const ask = (q?: string) => {
     const text = (q ?? query).trim();
@@ -326,7 +364,7 @@ export default function DashboardPage() {
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "var(--bg-base)" }}>
-      <Sidebar open={sidebarOpen} onClose={closeSidebar} />
+      <Sidebar open={sidebarOpen} onClose={closeSidebar} user={user ? { name: user.name } : undefined} />
 
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <Topbar onMenuClick={() => setSidebarOpen(true)} />
@@ -335,10 +373,10 @@ export default function DashboardPage() {
           <div className="max-w-[1380px] mx-auto px-6 py-6">
 
             {/* ── Header ── */}
-            <div className="flex items-start justify-between gap-4 mb-6">
+            <div className="flex items-start justify-between gap-4 mb-5">
               <div>
                 <h1 className="font-display text-[26px] font-extrabold leading-tight tracking-tight" style={{ color: "var(--text-primary)" }}>
-                  {greeting}, <span className="text-primary-400">Advocate</span>
+                  {greeting}, <span className="text-primary-400">{displayName}</span>
                 </h1>
                 <p className="text-[12px] font-mono mt-1.5" style={{ color: "var(--text-tertiary)" }}>
                   {gregorian}{hijri && <span className="text-primary-400/70"> · {hijri}</span>}
@@ -355,12 +393,71 @@ export default function DashboardPage() {
               </div>
             </div>
 
+            {/* ── Next Hearing hero (the signature widget) ── */}
+            <div className="mb-5">
+              {nextHearing ? (
+                <Link
+                  href={nextHearing.href}
+                  className="group relative block rounded-2xl overflow-hidden transition-transform hover:scale-[1.005]"
+                  style={{
+                    background: "linear-gradient(110deg, rgba(6,182,212,0.16) 0%, rgba(8,15,28,0.5) 45%, var(--bg-surface-1) 100%)",
+                    border: "1px solid rgba(6,182,212,0.28)",
+                    boxShadow: "var(--glow-cyan-sm)",
+                  }}
+                >
+                  {/* decorative scales watermark */}
+                  <Scale className="absolute -right-4 -bottom-6 h-40 w-40 opacity-[0.05] text-primary-300 pointer-events-none" strokeWidth={1} />
+                  <div className="relative flex items-center gap-5 px-6 py-5 flex-wrap">
+                    <div className="w-14 h-14 rounded-2xl grid place-items-center flex-shrink-0"
+                         style={{ background: "linear-gradient(135deg,#06b6d4,#0e7490)", boxShadow: "0 0 22px rgba(6,182,212,0.35)" }}>
+                      <CalendarClock className="h-7 w-7 text-white" strokeWidth={1.75} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] flex items-center gap-2" style={{ color: "var(--text-tertiary)" }}>
+                        Next Hearing
+                        <span className="font-sans text-[12px] tracking-normal text-primary-300/80" dir="rtl">اگلی پیشی</span>
+                      </p>
+                      <p className="font-display text-[19px] font-bold truncate mt-0.5" style={{ color: "var(--text-primary)" }}>{nextHearing.title}</p>
+                      <p className="text-[12.5px] mt-0.5 flex items-center gap-3 flex-wrap" style={{ color: "var(--text-secondary)" }}>
+                        {nextHearing.court && <span className="inline-flex items-center gap-1"><Scale className="h-3.5 w-3.5" />{nextHearing.court}</span>}
+                        {nextHearing.ref && <span className="font-mono text-[11px]" style={{ color: "var(--text-tertiary)" }}>{nextHearing.ref}</span>}
+                        <span className={`inline-flex items-center text-[9.5px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border ${SOURCE_BADGE[nextHearing.source]}`}>{nextHearing.source}</span>
+                      </p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="font-display text-[24px] font-extrabold leading-none"
+                         style={{ color: dayDiff(nextHearing.date) <= 1 ? "#f87171" : "#22d3ee" }}>
+                        {countdownLabel(nextHearing.date)}
+                      </p>
+                      <p className="text-[12px] mt-1 font-mono" style={{ color: "var(--text-tertiary)" }}>{fmtHearingDate(nextHearing.date)}</p>
+                    </div>
+                    <ArrowRight className="h-5 w-5 flex-shrink-0 transition-transform group-hover:translate-x-1" strokeWidth={2} style={{ color: "var(--text-tertiary)" }} />
+                  </div>
+                </Link>
+              ) : (
+                <div className="rounded-2xl px-6 py-5 flex items-center gap-4" style={cardStyle}>
+                  <div className="w-12 h-12 rounded-xl grid place-items-center flex-shrink-0" style={{ background: "var(--bg-surface-2)", color: "var(--text-tertiary)" }}>
+                    <CalendarClock className="h-6 w-6" strokeWidth={1.5} />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] flex items-center gap-2" style={{ color: "var(--text-tertiary)" }}>
+                      Next Hearing <span className="font-sans tracking-normal text-[12px]" dir="rtl">اگلی پیشی</span>
+                    </p>
+                    <p className="text-[13.5px] mt-0.5" style={{ color: "var(--text-secondary)" }}>No upcoming hearings. Add a hearing date to a case and it will appear here.</p>
+                  </div>
+                  <Link href="/chamber" className="inline-flex items-center gap-1 text-[12px] font-semibold text-primary-400 hover:text-primary-300 flex-shrink-0">
+                    Go to Cases <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.25} />
+                  </Link>
+                </div>
+              )}
+            </div>
+
             {/* ── Stats ── */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
               {STATS.map((s) => {
                 const Icon = s.icon;
                 return (
-                  <div key={s.label} className="rounded-xl px-4 pt-4 pb-2 overflow-hidden" style={cardStyle}>
+                  <div key={s.label} className="rounded-xl px-4 py-4 overflow-hidden" style={cardStyle}>
                     <div className="flex items-start gap-3">
                       <span className={`w-9 h-9 rounded-lg grid place-items-center flex-shrink-0 ${s.iconCls}`}>
                         <Icon className="h-[18px] w-[18px]" strokeWidth={1.75} />
@@ -372,7 +469,6 @@ export default function DashboardPage() {
                         </p>
                       </div>
                     </div>
-                    <Spark accent={s.accent} />
                   </div>
                 );
               })}
@@ -380,31 +476,38 @@ export default function DashboardPage() {
 
             {/* ── Row 1 ── */}
             <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_0.9fr_1.1fr] gap-5 mb-5">
-              {/* Cause list */}
+              {/* Cause list — unified across Cases, Chamber & Diary */}
               <section className="rounded-xl flex flex-col overflow-hidden" style={cardStyle}>
-                <CardHead title="Today's Cause List" action={
-                  <Link href="/chamber" className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>View Full List</Link>
+                <CardHead title={todayHearings.length > 0 ? "Today's Cause List" : "Upcoming Hearings"} action={
+                  <Link href="/chamber" className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>View Cases</Link>
                 } />
-                {CAUSE_LIST.length === 0 ? (
-                  <Empty icon={CalendarDays} text="No hearings scheduled. Add a case and today's cause list will appear here." cta="Add a hearing" href="/chamber" />
+                {causeList.length === 0 ? (
+                  <Empty icon={CalendarDays} text="No hearings scheduled. Add a hearing date to a case and your cause list will appear here." cta="Add a hearing" href="/chamber" />
                 ) : (
                   <>
                     <div className="px-2 py-1">
-                      <div className="grid grid-cols-[64px_1.5fr_1.3fr_84px_1fr] gap-2.5 px-2.5 py-2 text-[9.5px] uppercase tracking-[0.1em]" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>
-                        <span>Time</span><span>Case</span><span>Court</span><span>Status</span><span>Next Action</span>
+                      <div className="grid grid-cols-[78px_1.6fr_1.2fr_72px] gap-2.5 px-2.5 py-2 text-[9.5px] uppercase tracking-[0.1em]" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>
+                        <span>When</span><span>Case</span><span>Court</span><span>Source</span>
                       </div>
-                      {CAUSE_LIST.map((c) => (
-                        <Link key={c.title} href="/chamber" className="grid grid-cols-[64px_1.5fr_1.3fr_84px_1fr] gap-2.5 items-center px-2.5 py-2.5 rounded-lg hover:bg-[var(--bg-surface-2)] transition-colors">
-                          <span className="text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>{c.time}</span>
-                          <span className="min-w-0"><span className="block text-[12.5px] font-semibold truncate" style={{ color: "var(--text-primary)" }}>{c.title}</span><span className="text-[10px] font-mono" style={{ color: "var(--text-tertiary)" }}>{c.ref}</span></span>
-                          <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>{c.court}</span>
-                          <span><span className={`inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide px-2 py-1 rounded border ${PILL_CLS[c.status]}`}>{c.status === "urgent" && <AlertTriangle className="h-2.5 w-2.5" strokeWidth={2.5} />}{c.status}</span></span>
-                          <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>{c.next}</span>
-                        </Link>
-                      ))}
+                      {causeList.map((c) => {
+                        const urgent = dayDiff(c.date) <= 1;
+                        return (
+                          <Link key={c.id} href={c.href} className="grid grid-cols-[78px_1.6fr_1.2fr_72px] gap-2.5 items-center px-2.5 py-2.5 rounded-lg hover:bg-[var(--bg-surface-2)] transition-colors">
+                            <span className={`text-[11px] font-bold ${urgent ? "text-danger-500" : "text-primary-400"}`}>
+                              {countdownLabel(c.date)}
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block text-[12.5px] font-semibold truncate" style={{ color: "var(--text-primary)" }}>{c.title}</span>
+                              {c.ref && <span className="text-[10px] font-mono" style={{ color: "var(--text-tertiary)" }}>{c.ref}</span>}
+                            </span>
+                            <span className="text-[11px] truncate" style={{ color: "var(--text-secondary)" }}>{c.court || "—"}</span>
+                            <span><span className={`inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border ${SOURCE_BADGE[c.source]}`}>{c.source}</span></span>
+                          </Link>
+                        );
+                      })}
                     </div>
                     <div className="flex items-center gap-2 px-4 py-3 mt-auto text-[11px]" style={{ borderTop: "1px solid var(--border-subtle)", color: "var(--text-tertiary)" }}>
-                      <Clock className="h-3.5 w-3.5" strokeWidth={1.75} /> Upcoming hearings will appear here
+                      <Clock className="h-3.5 w-3.5" strokeWidth={1.75} /> Pulled from Case Management, Chamber & Diary
                     </div>
                   </>
                 )}
@@ -413,7 +516,7 @@ export default function DashboardPage() {
               {/* Quick actions */}
               <section className="rounded-xl flex flex-col overflow-hidden" style={cardStyle}>
                 <CardHead title="Quick Legal Actions" action={
-                  <button className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>Edit</button>
+                  <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>{ACTIONS.length} tools</span>
                 } />
                 <div className="flex flex-col gap-0.5 p-2">
                   {ACTIONS.map((a) => {
@@ -488,7 +591,7 @@ export default function DashboardPage() {
               <section className="rounded-xl flex flex-col overflow-hidden" style={cardStyle}>
                 <CardHead title="Recent Drafts" action={<Link href="/documents" className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>View All</Link>} />
                 {recentDrafts.length === 0 ? (
-                  <Empty icon={FilePen} text="No drafts yet. Start a new draft and it will show up here." cta="Create your first draft" href="/draft-review" />
+                  <Empty icon={FilePen} text="No drafts yet. Start a new draft and it will show up here." cta="Create your first draft" href="/applications" />
                 ) : (
                   <div className="flex flex-col p-2">
                     {recentDrafts.map((d) => (

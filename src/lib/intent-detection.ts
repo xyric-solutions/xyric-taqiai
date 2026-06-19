@@ -318,7 +318,7 @@ const intentMeta: Record<string, {
     actions: [
       { label: "Custom Affidavit", labelUrdu: "حلف نامہ", href: "/affidavits/custom-affidavit", type: "template" },
       { label: "Custom Agreement", labelUrdu: "معاہدہ", href: "/agreements/custom-agreement", type: "template" },
-      { label: "Court Case Draft", labelUrdu: "عدالتی مسودہ", href: "/court-cases", type: "tool" },
+      { label: "Court Case Draft", labelUrdu: "عدالتی مسودہ", href: "/applications", type: "tool" },
     ],
   },
   criminal: {
@@ -329,7 +329,7 @@ const intentMeta: Record<string, {
     systemPrompt: "This is a criminal law matter. Reference relevant PPC sections, CrPC procedures, bail provisions (Section 497, 498 CrPC). Explain rights of accused and complainant.",
     actions: [
       { label: "FIR Cancel Affidavit", labelUrdu: "ایف آئی آر منسوخی", href: "/affidavits/fir-cancel", type: "template" },
-      { label: "Bail Application", labelUrdu: "ضمانت درخواست", href: "/court-cases", type: "tool" },
+      { label: "Bail Application", labelUrdu: "ضمانت درخواست", href: "/criminal-law", type: "tool" },
       { label: "Surety Bond", labelUrdu: "ضمانتی بانڈ", href: "/affidavits/surety-bond", type: "template" },
       { label: "Police Application", labelUrdu: "تھانے میں درخواست", href: "/applications/police-station", type: "template" },
     ],
@@ -368,7 +368,7 @@ const intentMeta: Record<string, {
     laws: ["Code of Civil Procedure 1908 (CPC)", "Contract Act 1872", "Specific Relief Act 1877", "Limitation Act 1908"],
     systemPrompt: "This is a civil law matter. Reference CPC procedures, Contract Act 1872, Specific Relief Act, and Limitation Act.",
     actions: [
-      { label: "Legal Notice", labelUrdu: "قانونی نوٹس", href: "/court-cases", type: "tool" },
+      { label: "Legal Notice", labelUrdu: "قانونی نوٹس", href: "/applications", type: "tool" },
       { label: "Custom Agreement", labelUrdu: "معاہدہ", href: "/agreements/custom-agreement", type: "template" },
       { label: "Settlement Deed", labelUrdu: "تصفیہ نامہ", href: "/agreements/settlement-deed", type: "template" },
     ],

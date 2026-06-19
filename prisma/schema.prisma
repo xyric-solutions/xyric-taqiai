@@ -78,11 +78,13 @@ model Matter {
   role        String
   clientName  String
   clientCnic  String?
+  clientPhone String?
   opponentName String?
   judgeName   String?
   dateFiled   DateTime?
   nextHearing DateTime?
   notes       String?
+  documentIds String   @default("[]")
   archived    Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -115,6 +117,7 @@ model DiaryEntry {
   stage       String
   proceeding  String?
   nextDate    DateTime?
+  clientPhone String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -153,6 +156,21 @@ model LegalCase {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  hearings CaseHearing[]
+
   @@index([userId, status])
   @@index([userId, nextHearingDate])
+}
+
+model CaseHearing {
+  id        String    @id @default(cuid())
+  caseId    String
+  case      LegalCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  date      DateTime
+  purpose   String?
+  result    String?
+  nextDate  DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([caseId])
 }

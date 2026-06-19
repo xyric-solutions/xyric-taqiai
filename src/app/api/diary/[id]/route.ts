@@ -18,7 +18,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
-  const { caseNumber, lastDate, title, courtName, stage, proceeding, nextDate } = body;
+  const { caseNumber, lastDate, title, courtName, stage, proceeding, nextDate, clientPhone } = body;
 
   const updated = await prisma.diaryEntry.update({
     where: { id },
@@ -30,6 +30,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       ...(stage !== undefined && { stage }),
       ...(proceeding !== undefined && { proceeding: proceeding || null }),
       ...(nextDate !== undefined && { nextDate: nextDate ? new Date(nextDate) : null }),
+      ...(clientPhone !== undefined && { clientPhone: clientPhone || null }),
     },
   });
 

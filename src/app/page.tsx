@@ -606,7 +606,7 @@ export default function LandingPage() {
                   { label: "AI Advisor",     href: "/ai-advisor"   },
                   { label: "Case Law",       href: "/case-law"     },
                   { label: "Draft Documents",href: "/affidavits"   },
-                  { label: "Court Cases",    href: "/court-cases"  },
+                  { label: "Case Management", href: "/cases"       },
                 ],
               },
               {
