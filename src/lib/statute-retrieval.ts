@@ -7,7 +7,7 @@ import {
   searchStatuteSections,
   findRelatedAmendments,
   type StatuteHit,
-} from "@/lib/statute-db";
+} from "@/lib/statute-db-runtime";
 
 export interface StatuteGrounding {
   hits: StatuteHit[];
@@ -27,12 +27,12 @@ function cite(h: StatuteHit): string {
  * grounding block instructing the model to answer FROM this latest law text.
  * Always safe — returns empty on any error.
  */
-export function retrieveStatuteGrounding(question: string, max = 5): StatuteGrounding {
+export async function retrieveStatuteGrounding(question: string, max = 5): Promise<StatuteGrounding> {
   try {
     const terms = termsFromQuestion(question);
     if (!terms.length) return { hits: [], block: "" };
 
-    const hits = searchStatuteSections(terms, max, question);
+    const hits = await searchStatuteSections(terms, max, question);
     if (!hits.length) return { hits: [], block: "" };
 
     const blocks = hits.map((h, i) => {
@@ -46,7 +46,7 @@ export function retrieveStatuteGrounding(question: string, max = 5): StatuteGrou
     // model sees base + every change and can state the CURRENT position. This is
     // what catches "has this law been amended?" — the core reliability concern.
     const top = hits[0];
-    const amendments = findRelatedAmendments(top.actName, top.province, top.actId);
+    const amendments = await findRelatedAmendments(top.actName, top.province, top.actId);
     const amendBlock = amendments.length
       ? `\n\nAMENDMENTS TO "${top.actName}" FOUND IN THE DATABASE (apply these — they change the base text above):\n` +
         amendments

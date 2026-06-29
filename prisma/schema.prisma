@@ -174,3 +174,44 @@ model CaseHearing {
 
   @@index([caseId])
 }
+
+model LegalAct {
+  id           Int            @id
+  actName      String         @map("act_name") @db.Text
+  actYear      Int?           @map("act_year")
+  href         String?        @db.Text
+  pdfUrl       String?        @map("pdf_url") @db.Text
+  fullText     String?        @map("full_text") @db.Text
+  sectionCount Int?           @default(0) @map("section_count")
+  status       String?        @default("in-force") @db.Text
+  scrapedAt    String?        @map("scraped_at") @db.Text
+  province     String?        @default("Federal") @db.Text
+  docType      String?        @default("act") @map("doc_type") @db.Text
+
+  sections LegalSection[]
+
+  @@index([province])
+  @@index([docType])
+  @@map("legal_acts")
+}
+
+model LegalSection {
+  id        Int      @id
+  actId     Int      @map("act_id")
+  act       LegalAct @relation(fields: [actId], references: [id], onDelete: Cascade)
+  sectionNo String?  @map("section_no") @db.Text
+  title     String?  @db.Text
+  body      String?  @db.Text
+
+  @@index([actId])
+  @@index([sectionNo])
+  @@map("legal_sections")
+}
+
+model LegalMigrationMeta {
+  key       String   @id @db.Text
+  value     String   @db.Text
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("legal_migration_meta")
+}

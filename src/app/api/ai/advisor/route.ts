@@ -8,7 +8,7 @@ import { rateLimit } from "@/lib/rate-limit";
 import { retrieveGrounding, type GroundingSource } from "@/lib/judgment-retrieval";
 import { retrieveStatuteGrounding } from "@/lib/statute-retrieval";
 import { stampDutyBlock, feeProvinceOf } from "@/lib/stamp-duty-reference";
-import { latestFinanceFeeAmendments } from "@/lib/statute-db";
+import { latestFinanceFeeAmendments } from "@/lib/statute-db-runtime";
 import { legalUpdatesBlock } from "@/lib/legal-updates-reference";
 
 export const dynamic = "force-dynamic";
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
     }
     let statuteCount = 0;
     if (statuteNow) {
-      const { hits, block: statuteBlock } = retrieveStatuteGrounding(realQuestion);
+      const { hits, block: statuteBlock } = await retrieveStatuteGrounding(realQuestion);
       if (statuteBlock) {
         statuteCount = hits.length;
         blocks.push(statuteBlock);
@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
       // take precedence over the raw schedule text. Combines curated verified
       // amounts with the latest provincial Finance-Act amendment text (covers
       // every province / instrument, not just the curated ones).
-      const financeAmends = latestFinanceFeeAmendments(feeProvinceOf(realQuestion));
+      const financeAmends = await latestFinanceFeeAmendments(feeProvinceOf(realQuestion));
       const stampBlock = stampDutyBlock(realQuestion, financeAmends);
       if (stampBlock) blocks.push(stampBlock);
 
