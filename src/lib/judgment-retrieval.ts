@@ -105,7 +105,7 @@ ${blocks.join("\n\n---\n\n")}
 GROUNDING RULES (mandatory):
 - When you cite case-law, cite ONLY from the retrieved judgments above. Do NOT invent or recall any citation that is not listed here.
 - If none of the retrieved judgments are relevant to the question, say so plainly and answer on statute/principle alone — do NOT fabricate a citation.
-- You may still cite statute sections (PPC/CrPC/CPC etc.) from your own legal knowledge.`;
+- For statute sections, prefer any "RETRIEVED STATUTE SECTIONS" provided below; only fall back to your own legal knowledge for sections not covered there.`;
 
     return { sources, block };
   } catch {

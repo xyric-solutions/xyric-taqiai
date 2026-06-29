@@ -366,7 +366,7 @@ export default function TranslatePage() {
       {/* Header */}
       <div>
         <h1 className="text-xl sm:text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2.5">
-          <div className="p-2 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 shadow-lg">
+          <div className="p-2 rounded-xl bg-gradient-to-br from-[#a78bfa] to-[#7c5cfc] shadow-lg">
             <Languages className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
           </div>
           Legal Translation / قانونی ترجمہ
@@ -383,7 +383,7 @@ export default function TranslatePage() {
             <button
               onClick={() => setMode("text")}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium flex-1 sm:flex-auto justify-center ${
-                mode === "text" ? "bg-white text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                mode === "text" ? "bg-[var(--bg-surface-3)] text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
               }`}
             >
               <FileText className="h-4 w-4" />
@@ -392,7 +392,7 @@ export default function TranslatePage() {
             <button
               onClick={() => setMode("image")}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium flex-1 sm:flex-auto justify-center ${
-                mode === "image" ? "bg-white text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                mode === "image" ? "bg-[var(--bg-surface-3)] text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
               }`}
             >
               <Camera className="h-4 w-4" />
@@ -401,7 +401,7 @@ export default function TranslatePage() {
             <button
               onClick={() => setMode("legal")}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium flex-1 sm:flex-auto justify-center ${
-                mode === "legal" ? "bg-white text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                mode === "legal" ? "bg-[var(--bg-surface-3)] text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
               }`}
             >
               <Stamp className="h-4 w-4" />
@@ -415,7 +415,7 @@ export default function TranslatePage() {
               <select
                 value={sourceLang}
                 onChange={(e) => setSourceLang(e.target.value)}
-                className="flex-1 sm:flex-none px-3 sm:px-4 py-2.5 border border-[var(--border-default)] rounded-xl text-sm font-medium text-[var(--text-primary)] bg-white focus:outline-none focus:ring-2 focus:ring-primary-500/30 hover:border-slate-300"
+                className="flex-1 sm:flex-none px-3 sm:px-4 py-2.5 border border-[var(--border-default)] rounded-xl text-sm font-medium text-[var(--text-primary)] bg-[var(--bg-surface-2)] focus:outline-none focus:ring-2 focus:ring-[#a78bfa]/30 hover:border-[var(--border-strong)]"
               >
                 {languages.map((lang) => (
                   <option key={lang.code} value={lang.code}>
@@ -425,14 +425,14 @@ export default function TranslatePage() {
               </select>
               <button
                 onClick={swapLanguages}
-                className="p-2.5 rounded-xl bg-primary-50 text-primary-600 hover:bg-primary-100 flex-shrink-0"
+                className="p-2.5 rounded-xl bg-[rgba(167,139,250,0.12)] text-[#a78bfa] hover:bg-[rgba(167,139,250,0.2)] flex-shrink-0"
               >
                 <ArrowRightLeft className="h-4 w-4" />
               </button>
               <select
                 value={targetLang}
                 onChange={(e) => setTargetLang(e.target.value)}
-                className="flex-1 sm:flex-none px-3 sm:px-4 py-2.5 border border-[var(--border-default)] rounded-xl text-sm font-medium text-[var(--text-primary)] bg-white focus:outline-none focus:ring-2 focus:ring-primary-500/30 hover:border-slate-300"
+                className="flex-1 sm:flex-none px-3 sm:px-4 py-2.5 border border-[var(--border-default)] rounded-xl text-sm font-medium text-[var(--text-primary)] bg-[var(--bg-surface-2)] focus:outline-none focus:ring-2 focus:ring-[#a78bfa]/30 hover:border-[var(--border-strong)]"
               >
                 {languages.map((lang) => (
                   <option key={lang.code} value={lang.code}>
@@ -445,7 +445,7 @@ export default function TranslatePage() {
 
           {/* Legal doc info */}
           {mode === "legal" && (
-            <p className="text-sm text-indigo-700 bg-indigo-50 px-3 py-1.5 rounded-lg">
+            <p className="text-sm text-[#a78bfa] bg-[rgba(167,139,250,0.12)] px-3 py-1.5 rounded-lg">
               Urdu → English — Standard legal format / قانونی فارمیٹ
             </p>
           )}
@@ -456,7 +456,7 @@ export default function TranslatePage() {
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700 flex items-center justify-between">
           <span>{error}</span>
-          <button onClick={() => setError("")} className="text-red-400 hover:text-red-600"><X className="h-4 w-4" /></button>
+          <button onClick={() => setError("")} className="text-red-400 hover:text-red-300"><X className="h-4 w-4" /></button>
         </div>
       )}
 
@@ -466,18 +466,18 @@ export default function TranslatePage() {
           {/* Document Type Selector */}
           <Card className="p-4 sm:p-5 space-y-4">
             <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-              <Stamp className="h-4 w-4 text-indigo-500" />
+              <Stamp className="h-4 w-4 text-[#a78bfa]" />
               Document Type / دستاویز کی قسم
             </h3>
 
             {/* ── Section 1: Nikah Nama ── */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <div className="h-px flex-1 bg-indigo-200" />
-                <span className="text-[11px] font-bold text-indigo-600 uppercase tracking-wide px-2">
+                <div className="h-px flex-1 bg-[var(--border-subtle)]" />
+                <span className="text-[11px] font-bold text-[#a78bfa] uppercase tracking-wide px-2">
                   Nikah Nama / نکاح نامہ
                 </span>
-                <div className="h-px flex-1 bg-indigo-200" />
+                <div className="h-px flex-1 bg-[var(--border-subtle)]" />
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {[
@@ -489,8 +489,8 @@ export default function TranslatePage() {
                     onClick={() => setSelectedTemplate(tpl!.id)}
                     className={`p-3 rounded-xl border text-left text-xs font-medium transition-all ${
                       selectedTemplate === tpl!.id
-                        ? "border-indigo-400 bg-indigo-50 text-indigo-800"
-                        : "border-[var(--border-default)] bg-white text-[var(--text-secondary)] hover:border-slate-300 hover:bg-[var(--bg-surface-2)]"
+                        ? "border-[#a78bfa]/50 bg-[rgba(167,139,250,0.12)] text-[#a78bfa]"
+                        : "border-[var(--border-default)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] hover:text-[var(--text-primary)]"
                     }`}
                   >
                     <div className="font-semibold text-[11px] leading-tight">{tpl!.name}</div>
@@ -503,11 +503,11 @@ export default function TranslatePage() {
             {/* ── Section 2: Other Documents ── */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <div className="h-px flex-1 bg-slate-200" />
+                <div className="h-px flex-1 bg-[var(--border-subtle)]" />
                 <span className="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wide px-2">
                   Other Documents / دیگر دستاویزات
                 </span>
-                <div className="h-px flex-1 bg-slate-200" />
+                <div className="h-px flex-1 bg-[var(--border-subtle)]" />
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {TRANSLATION_TEMPLATES.filter(
@@ -518,8 +518,8 @@ export default function TranslatePage() {
                     onClick={() => setSelectedTemplate(tpl.id)}
                     className={`p-3 rounded-xl border text-left text-xs font-medium transition-all ${
                       selectedTemplate === tpl.id
-                        ? "border-indigo-400 bg-indigo-50 text-indigo-800"
-                        : "border-[var(--border-default)] bg-white text-[var(--text-secondary)] hover:border-slate-300 hover:bg-[var(--bg-surface-2)]"
+                        ? "border-[#a78bfa]/50 bg-[rgba(167,139,250,0.12)] text-[#a78bfa]"
+                        : "border-[var(--border-default)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] hover:text-[var(--text-primary)]"
                     }`}
                   >
                     <div className="font-semibold text-[11px] leading-tight">{tpl.name}</div>
@@ -540,13 +540,13 @@ export default function TranslatePage() {
                 <div className="flex bg-[var(--bg-surface-2)] rounded-lg p-0.5">
                   <button
                     onClick={() => setLegalInputMode("image")}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium ${legalInputMode === "image" ? "bg-white text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)]"}`}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium ${legalInputMode === "image" ? "bg-[var(--bg-surface-3)] text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)]"}`}
                   >
                     <Camera className="h-3 w-3 inline mr-1" />Image
                   </button>
                   <button
                     onClick={() => setLegalInputMode("text")}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium ${legalInputMode === "text" ? "bg-white text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)]"}`}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium ${legalInputMode === "text" ? "bg-[var(--bg-surface-3)] text-[var(--text-primary)] shadow-sm" : "text-[var(--text-tertiary)]"}`}
                   >
                     <FileText className="h-3 w-3 inline mr-1" />Text
                   </button>
@@ -572,10 +572,10 @@ export default function TranslatePage() {
                   ) : (
                     <div
                       onClick={() => legalFileInputRef.current?.click()}
-                      className="h-full min-h-[250px] border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/20 group"
+                      className="h-full min-h-[250px] border-2 border-dashed border-[var(--border-default)] rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-[#a78bfa] hover:bg-[rgba(167,139,250,0.06)] group"
                     >
-                      <div className="p-4 rounded-2xl bg-[var(--bg-surface-2)] group-hover:bg-indigo-100 mb-3">
-                        <Upload className="h-7 w-7 text-[var(--text-tertiary)] group-hover:text-indigo-500" />
+                      <div className="p-4 rounded-2xl bg-[var(--bg-surface-2)] group-hover:bg-[rgba(167,139,250,0.15)] mb-3">
+                        <Upload className="h-7 w-7 text-[var(--text-tertiary)] group-hover:text-[#a78bfa]" />
                       </div>
                       <p className="text-sm font-semibold text-[var(--text-secondary)]">Click to upload document</p>
                       <p className="text-xs text-[var(--text-tertiary)] mt-1">JPG, PNG — Max 10MB</p>
@@ -596,7 +596,7 @@ export default function TranslatePage() {
                   onChange={(e) => setLegalInputText(e.target.value)}
                   dir="rtl"
                   placeholder="یہاں اردو دستاویز کا متن پیسٹ کریں..."
-                  className="flex-1 min-h-[250px] w-full px-4 py-3 border border-[var(--border-default)] rounded-xl text-slate-900 placeholder-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30 resize-none text-sm"
+                  className="flex-1 min-h-[250px] w-full px-4 py-3 border border-[var(--border-default)] rounded-xl text-[var(--text-primary)] placeholder-[var(--text-tertiary)] bg-[var(--bg-surface-2)] focus:outline-none focus:ring-2 focus:ring-[#a78bfa]/30 resize-none text-sm"
                   style={{ lineHeight: "2" }}
                 />
               )}
@@ -605,7 +605,7 @@ export default function TranslatePage() {
                 onClick={handleLegalTranslate}
                 loading={legalLoading}
                 disabled={legalInputMode === "text" ? !legalInputText.trim() : !legalImageFile}
-                className="w-full mt-4 bg-indigo-600 hover:bg-indigo-700"
+                className="w-full mt-4 bg-[#a78bfa] hover:bg-[#9474f5] text-[#0d1318]"
                 size="lg"
               >
                 {legalLoading ? (
@@ -662,7 +662,7 @@ export default function TranslatePage() {
                         onClick={() => setLegalSpacing(p.val)}
                         className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-all ${
                           legalSpacing === p.val
-                            ? "bg-primary-500 text-white border-primary-500"
+                            ? "bg-[#a78bfa] text-[#0d1318] border-[#a78bfa]"
                             : "bg-[var(--bg-surface-2)] text-[var(--text-tertiary)] border-[var(--border-default)] hover:text-[var(--text-primary)]"
                         }`}
                       >
@@ -681,7 +681,7 @@ export default function TranslatePage() {
                           const v = parseFloat(e.target.value);
                           if (!isNaN(v) && v >= 0.8 && v <= 4) setLegalSpacing(v);
                         }}
-                        className="w-14 px-2 py-1 text-[11px] rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-default)] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-primary-500/30"
+                        className="w-14 px-2 py-1 text-[11px] rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-default)] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[#a78bfa]/30"
                       />
                     </div>
                   </div>
@@ -726,12 +726,12 @@ export default function TranslatePage() {
                       onChange={(e) => setAiEditText(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && !aiEditLoading && handleAiEdit()}
                       placeholder='AI edit — e.g. "Change groom name to Ali Hassan"'
-                      className="flex-1 px-3 py-2 text-xs border border-[var(--border-default)] rounded-lg bg-[var(--bg-surface-1)] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-primary-500/30 placeholder-[var(--text-tertiary)]"
+                      className="flex-1 px-3 py-2 text-xs border border-[var(--border-default)] rounded-lg bg-[var(--bg-surface-1)] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[#a78bfa]/30 placeholder-[var(--text-tertiary)]"
                     />
                     <button
                       onClick={handleAiEdit}
                       disabled={!aiEditText.trim() || aiEditLoading}
-                      className="px-3 py-2 text-xs font-medium rounded-lg bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
+                      className="px-3 py-2 text-xs font-medium rounded-lg bg-[#a78bfa] text-[#0d1318] hover:bg-[#9474f5] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
                     >
                       {aiEditLoading ? <span className="animate-pulse">Editing...</span> : <>✨ AI Edit</>}
                     </button>
@@ -745,7 +745,7 @@ export default function TranslatePage() {
                   key={legalHtml}
                   contentEditable
                   suppressContentEditableWarning
-                  className="flex-1 min-h-[300px] overflow-y-auto max-h-[600px] px-4 py-3 border border-[var(--border-default)] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                  className="flex-1 min-h-[300px] overflow-y-auto max-h-[600px] px-4 py-3 border border-[var(--border-default)] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#a78bfa]/20"
                   style={{
                     backgroundColor: "#ffffff",
                     color: "#000000",
@@ -766,11 +766,11 @@ export default function TranslatePage() {
               )}
 
               {legalHtml && (
-                <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5">
-                  <ImageIcon className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                  <div className="text-xs text-amber-800">
+                <div className="mt-3 p-3 bg-[rgba(245,158,11,0.1)] border border-[rgba(245,158,11,0.25)] rounded-xl flex items-start gap-2.5">
+                  <ImageIcon className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div className="text-xs text-amber-300">
                     <p className="font-semibold">Attestation Required / تصدیق ضروری ہے</p>
-                    <p className="mt-0.5 text-amber-700">
+                    <p className="mt-0.5 text-amber-400">
                       Print and get it attested by a Notary Public or Oath Commissioner.
                     </p>
                   </div>
@@ -810,7 +810,7 @@ export default function TranslatePage() {
                     ? "الصق نص الوثيقة القانونية هنا..."
                     : "Paste your legal document text here...\n\nExample: Affidavit, Agreement, Court Order, Power of Attorney, etc."
                 }
-                className="flex-1 min-h-[250px] sm:min-h-[300px] w-full px-4 py-3 border border-[var(--border-default)] rounded-xl text-slate-900 placeholder-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500/30 resize-none text-sm leading-relaxed hover:border-slate-300"
+                className="flex-1 min-h-[250px] sm:min-h-[300px] w-full px-4 py-3 border border-[var(--border-default)] rounded-xl text-[var(--text-primary)] placeholder-[var(--text-tertiary)] bg-[var(--bg-surface-2)] focus:outline-none focus:ring-2 focus:ring-[#a78bfa]/30 resize-none text-sm leading-relaxed hover:border-[var(--border-strong)]"
                 style={{ lineHeight: srcLangData.dir === "rtl" ? "2" : "1.8" }}
               />
             ) : (
@@ -835,10 +835,10 @@ export default function TranslatePage() {
                 ) : (
                   <div
                     onClick={() => fileInputRef.current?.click()}
-                    className="h-full min-h-[250px] sm:min-h-[300px] border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-primary-400 hover:bg-primary-50/30 group"
+                    className="h-full min-h-[250px] sm:min-h-[300px] border-2 border-dashed border-[var(--border-default)] rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-[#a78bfa] hover:bg-[rgba(167,139,250,0.06)] group"
                   >
-                    <div className="p-4 rounded-2xl bg-[var(--bg-surface-2)] group-hover:bg-primary-100 mb-4">
-                      <Upload className="h-8 w-8 text-[var(--text-tertiary)] group-hover:text-primary-500" />
+                    <div className="p-4 rounded-2xl bg-[var(--bg-surface-2)] group-hover:bg-[rgba(167,139,250,0.15)] mb-4">
+                      <Upload className="h-8 w-8 text-[var(--text-tertiary)] group-hover:text-[#a78bfa]" />
                     </div>
                     <p className="text-sm font-semibold text-[var(--text-secondary)]">Click to upload document image</p>
                     <p className="text-xs text-[var(--text-tertiary)] mt-1">JPG, PNG - Max 10MB</p>
@@ -882,14 +882,14 @@ export default function TranslatePage() {
               </h2>
               {translation && (
                 <div className="flex items-center gap-1.5">
-                  <button onClick={handleCopy} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-slate-200">
-                    {copied ? <Check className="h-3 w-3 text-green-600" /> : <Copy className="h-3 w-3" />}
+                  <button onClick={handleCopy} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-3)]">
+                    {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
                     {copied ? "Copied" : "Copy"}
                   </button>
-                  <button onClick={handlePrintWithLoading} disabled={printLoading} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg bg-primary-50 text-primary-600 hover:bg-primary-100 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <button onClick={handlePrintWithLoading} disabled={printLoading} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg bg-[rgba(167,139,250,0.12)] text-[#a78bfa] hover:bg-[rgba(167,139,250,0.2)] disabled:opacity-50 disabled:cursor-not-allowed">
                     <Download className="h-3 w-3" /> {printLoading ? "..." : "PDF"}
                   </button>
-                  <button onClick={handlePrintWithLoading} disabled={printLoading} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <button onClick={handlePrintWithLoading} disabled={printLoading} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-3)] disabled:opacity-50 disabled:cursor-not-allowed">
                     <Printer className="h-3 w-3" /> {printLoading ? "..." : "Print"}
                   </button>
                 </div>
@@ -907,7 +907,7 @@ export default function TranslatePage() {
                   contentEditable
                   suppressContentEditableWarning
                   dir={tgtLangData.dir}
-                  className="flex-1 min-h-[250px] sm:min-h-[300px] overflow-y-auto max-h-[500px] px-4 py-3 border border-[var(--border-default)] rounded-xl bg-[var(--bg-surface-1)] text-sm text-[var(--text-primary)] leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary-500/30"
+                  className="flex-1 min-h-[250px] sm:min-h-[300px] overflow-y-auto max-h-[500px] px-4 py-3 border border-[var(--border-default)] rounded-xl bg-[var(--bg-surface-1)] text-sm text-[var(--text-primary)] leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#a78bfa]/30"
                   style={{ lineHeight: tgtLangData.dir === "rtl" ? "2.2" : "1.8" }}
                   dangerouslySetInnerHTML={{ __html: translation.replace(/\n/g, "<br/>") }}
                 />
@@ -933,11 +933,11 @@ export default function TranslatePage() {
             )}
 
             {translation && (
-              <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5">
-                <ImageIcon className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                <div className="text-xs text-amber-800">
+              <div className="mt-3 p-3 bg-[rgba(245,158,11,0.1)] border border-[rgba(245,158,11,0.25)] rounded-xl flex items-start gap-2.5">
+                <ImageIcon className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-300">
                   <p className="font-semibold">Attestation Required / تصدیق ضروری ہے</p>
-                  <p className="mt-0.5 text-amber-700">
+                  <p className="mt-0.5 text-amber-400">
                     This translation must be attested by a Notary Public or Oath Commissioner before submission to the department.
                   </p>
                 </div>

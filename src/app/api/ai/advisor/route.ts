@@ -6,6 +6,10 @@ import { Part } from "@google/generative-ai";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { retrieveGrounding, type GroundingSource } from "@/lib/judgment-retrieval";
+import { retrieveStatuteGrounding } from "@/lib/statute-retrieval";
+import { stampDutyBlock, feeProvinceOf } from "@/lib/stamp-duty-reference";
+import { latestFinanceFeeAmendments } from "@/lib/statute-db";
+import { legalUpdatesBlock } from "@/lib/legal-updates-reference";
 
 export const dynamic = "force-dynamic";
 
@@ -66,18 +70,45 @@ export async function POST(request: NextRequest) {
     // Plain conversational follow-ups stay clean (no judgment dump every turn).
     const isFollowUp = compacted.length > 0;
     const groundNow = !image && !!message && (!isFollowUp || wantsCaseLaw(realQuestion));
+    // Statute grounding runs on EVERY text turn — the latest Act text should
+    // ground the answer to the law itself (e.g. stamp paper), unlike judgments
+    // which we only surface when actually wanted.
+    const statuteNow = !image && !!message;
 
     let sources: GroundingSource[] = [];
-    let groundedPrompt = prompt;
+    const blocks: string[] = [];
     if (groundNow) {
       const { sources: found, block } = retrieveGrounding(realQuestion);
       if (block) {
         sources = found;
-        groundedPrompt = `${prompt}\n\n${block}\n\n${finalLanguageRule}`;
+        blocks.push(block);
       }
     }
+    let statuteCount = 0;
+    if (statuteNow) {
+      const { hits, block: statuteBlock } = retrieveStatuteGrounding(realQuestion);
+      if (statuteBlock) {
+        statuteCount = hits.length;
+        blocks.push(statuteBlock);
+      }
+      // Fee/stamp-duty amounts go LAST so they sit closest to the question and
+      // take precedence over the raw schedule text. Combines curated verified
+      // amounts with the latest provincial Finance-Act amendment text (covers
+      // every province / instrument, not just the curated ones).
+      const financeAmends = latestFinanceFeeAmendments(feeProvinceOf(realQuestion));
+      const stampBlock = stampDutyBlock(realQuestion, financeAmends);
+      if (stampBlock) blocks.push(stampBlock);
 
-    console.log(`[AI Advisor] Intent: ${intent}, Has Image: ${!!image}, Grounded: ${sources.length}`);
+      // Curated recent reforms not captured as Acts (e.g. Green Property
+      // Certificate / Fard) — so the Advisor answers instead of "no info".
+      const updatesBlock = legalUpdatesBlock(realQuestion);
+      if (updatesBlock) blocks.push(updatesBlock);
+    }
+    const groundedPrompt = blocks.length
+      ? `${prompt}\n\n${blocks.join("\n\n")}\n\n${finalLanguageRule}`
+      : prompt;
+
+    console.log(`[AI Advisor] Intent: ${intent}, Has Image: ${!!image}, Judgments: ${sources.length}, Statutes: ${statuteCount}`);
 
     // Build the model input (image + prompt, or grounded text prompt).
     let parts: string | Part[];

@@ -54,3 +54,6 @@ next-env.d.ts
 
 # runtime logs
 /logs/
+
+# local env backups (contain secrets) + pg-migrate env dumps
+*.sqlite.bak
