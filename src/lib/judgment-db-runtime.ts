@@ -504,5 +504,19 @@ export async function findReportedByCitations(citations: string[]): Promise<Reco
 }
 
 export async function getCitedByCount(citation: string | null): Promise<number> {
+  if (usePostgres()) {
+    try {
+      if (!citation) return 0;
+      const key = citation.replace(/[^a-z0-9]/gi, "").toUpperCase();
+      if (key.length < 5) return 0;
+      const rows = await prisma.$queryRawUnsafe<{ n: number }[]>(
+        "SELECT n FROM legal_cited_counts WHERE cited_key = $1 LIMIT 1",
+        key
+      );
+      return Number(rows[0]?.n || 0);
+    } catch {
+      return 0;
+    }
+  }
   return getCitedByCountSqlite(citation);
 }

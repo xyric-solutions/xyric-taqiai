@@ -264,3 +264,21 @@ model LegalJudgmentTag {
   @@index([tagType, tagValue])
   @@map("legal_judgment_tags")
 }
+
+model LegalCitedCount {
+  citedKey String @id @map("cited_key") @db.Text
+  n        Int    @default(0)
+
+  @@index([n])
+  @@map("legal_cited_counts")
+}
+
+model LegalCitationEdge {
+  id       Int     @id
+  citingId Int?    @map("citing_id")
+  citedKey String? @map("cited_key") @db.Text
+
+  @@index([citingId])
+  @@index([citedKey])
+  @@map("legal_citation_edges")
+}

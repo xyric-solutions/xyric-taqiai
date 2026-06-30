@@ -23,7 +23,7 @@ import { PrismaClient } from "@prisma/client";
 
 const SQLITE_PATH = "data/judgments.db";
 const JUDGMENT_BATCH = 100;
-const TAG_BATCH = 5000;
+const TAG_BATCH = 3000;
 
 const dryRun = process.argv.includes("--dry-run");
 const skipTags = process.argv.includes("--skip-tags");
@@ -270,14 +270,16 @@ async function maxPgId(prisma, table) {
 }
 
 async function setMeta(prisma, key, value) {
-  await prisma.$executeRawUnsafe(
-    `
-      INSERT INTO legal_migration_meta (key, value, updated_at)
-      VALUES ($1, $2, now())
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-    `,
-    key,
-    String(value)
+  await withRetry(`set meta ${key}`, () =>
+    prisma.$executeRawUnsafe(
+      `
+        INSERT INTO legal_migration_meta (key, value, updated_at)
+        VALUES ($1, $2, now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+      `,
+      key,
+      String(value)
+    )
   );
 }
 
@@ -357,7 +359,7 @@ async function main() {
   const prisma = new PrismaClient();
 
   try {
-    await createSchema(prisma);
+    await withRetry("create judgment schema", () => createSchema(prisma));
 
     if (!searchIndexOnly && sqlite) {
       await setMeta(prisma, "judgments_source_count", sourceCounts.judgments);
@@ -386,7 +388,7 @@ async function main() {
       }
     }
 
-    await createLightIndexes(prisma);
+    await withRetry("create light judgment indexes", () => createLightIndexes(prisma));
 
     const targetCounts = {
       judgments: await countPg(prisma, "legal_judgments"),
@@ -412,7 +414,7 @@ async function main() {
     }
 
     if (!skipSearchIndex) {
-      await createSearchIndex(prisma);
+      await withRetry("create judgment search index", () => createSearchIndex(prisma));
     }
 
     const ok =
