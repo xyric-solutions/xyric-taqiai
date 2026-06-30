@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJudgmentsByIds, searchLocalJudgments } from "@/lib/judgment-db";
+import { getJudgmentsByIds, searchLocalJudgments } from "@/lib/judgment-db-runtime";
 import { getCurrentUser } from "@/lib/auth";
 
 const SERVICE = process.env.SEMANTIC_URL || "http://127.0.0.1:8137";
@@ -39,10 +39,10 @@ export async function GET(req: NextRequest) {
 
   // Service unavailable → fall back to keyword search, flagged so the UI can hint.
   if (ids.length === 0) {
-    const kw = searchLocalJudgments(query, court, year, limit, "relevance", 0, reportedOnly);
+    const kw = await searchLocalJudgments(query, court, year, limit, "relevance", 0, reportedOnly);
     return NextResponse.json({ results: kw, mode: "keyword-fallback", available: false });
   }
 
-  const results = getJudgmentsByIds(ids, query, { court, year, reportedOnly, limit });
+  const results = await getJudgmentsByIds(ids, query, { court, year, reportedOnly, limit });
   return NextResponse.json({ results, mode: "semantic", available: true });
 }

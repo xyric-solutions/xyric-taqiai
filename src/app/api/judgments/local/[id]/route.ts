@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getLocalJudgmentById, getCitedByCount } from "@/lib/judgment-db";
+import { getLocalJudgmentById, getCitedByCount } from "@/lib/judgment-db-runtime";
 import { getCurrentUser } from "@/lib/auth";
 
 export async function GET(
@@ -13,10 +13,10 @@ export async function GET(
   const numId = parseInt(id);
   if (isNaN(numId)) return NextResponse.json({ error: "Invalid ID" }, { status: 400 });
 
-  const judgment = getLocalJudgmentById(numId);
+  const judgment = await getLocalJudgmentById(numId);
   if (!judgment) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const citedBy = getCitedByCount(judgment.real_citation || judgment.citation);
+  const citedBy = await getCitedByCount(judgment.real_citation || judgment.citation);
 
   return NextResponse.json({ judgment, citedBy });
 }

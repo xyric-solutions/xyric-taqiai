@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findReportedByCitations } from "@/lib/judgment-db";
+import { findReportedByCitations } from "@/lib/judgment-db-runtime";
 import { getCurrentUser } from "@/lib/auth";
 
 // POST { citations: string[] }
@@ -21,6 +21,6 @@ export async function POST(req: NextRequest) {
   }
 
   const clean = citations.filter((c): c is string => typeof c === "string").slice(0, 60);
-  const matches = findReportedByCitations(clean);
+  const matches = await findReportedByCitations(clean);
   return NextResponse.json({ matches });
 }
