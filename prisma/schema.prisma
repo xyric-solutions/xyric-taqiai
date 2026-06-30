@@ -215,3 +215,52 @@ model LegalMigrationMeta {
 
   @@map("legal_migration_meta")
 }
+
+model LegalJudgment {
+  id                       Int                @id
+  citation                 String             @db.Text
+  court                    String             @db.Text
+  year                     Int
+  content                  String?            @db.Text
+  processed                Int?               @default(0)
+  createdAt                BigInt?            @map("created_at")
+  title                    String?            @db.Text
+  realCitation             String?            @map("real_citation") @db.Text
+  lawCategory              String?            @map("law_category") @db.Text
+  caseType                 String?            @map("case_type") @db.Text
+  courtLevel               String?            @map("court_level") @db.Text
+  province                 String?            @db.Text
+  reportedStatus           String?            @map("reported_status") @db.Text
+  citationReporter         String?            @map("citation_reporter") @db.Text
+  authorityScore           Int?               @map("authority_score")
+  templateUsefulnessScore  Int?               @map("template_usefulness_score")
+  citationReliabilityScore Int?               @map("citation_reliability_score")
+  ocrQualityScore          Int?               @map("ocr_quality_score")
+  taggingConfidence        Int?               @map("tagging_confidence")
+  taggedAt                 BigInt?            @map("tagged_at")
+
+  tags LegalJudgmentTag[]
+
+  @@index([citation])
+  @@index([realCitation])
+  @@index([court, year])
+  @@index([lawCategory])
+  @@index([caseType])
+  @@map("legal_judgments")
+}
+
+model LegalJudgmentTag {
+  id           Int           @id
+  judgmentId   Int           @map("judgment_id")
+  judgment     LegalJudgment @relation(fields: [judgmentId], references: [id], onDelete: Cascade)
+  tagType      String        @map("tag_type") @db.Text
+  tagValue     String        @map("tag_value") @db.Text
+  confidence   Int           @default(70)
+  source       String        @default("rule") @db.Text
+  evidenceText String?       @map("evidence_text") @db.Text
+  createdAt    BigInt        @map("created_at")
+
+  @@index([judgmentId])
+  @@index([tagType, tagValue])
+  @@map("legal_judgment_tags")
+}
