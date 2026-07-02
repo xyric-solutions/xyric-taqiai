@@ -5,7 +5,7 @@ import fs from "fs";
 const DB_PATH = path.join(process.cwd(), "data", "judgments.db");
 const CITE_DB_PATH = path.join(process.cwd(), "data", "citations.db");
 
-export type SortMode = "relevance" | "newest" | "oldest";
+export type SortMode = "relevance" | "newest" | "oldest" | "cited";
 
 export interface JudgmentRow {
   id: number;
@@ -34,6 +34,7 @@ export interface JudgmentSearchResult {
   passages: string[];
   processed: number;
   related?: boolean;
+  citedBy?: number;
 }
 
 let _db: any = null;
@@ -49,6 +50,60 @@ function getDb(): any {
   // "flashing window" + lag). Read-only avoids that and is marginally faster.
   _db = new DatabaseSync(DB_PATH, { readOnly: true });
   return _db;
+}
+
+// ── Full-text search (FTS5) ────────────────────────────────────────────────────
+// data/judgments.db has an external-content FTS5 index `judgments_fts` (built by
+// scripts/pg-migrate/build-judgments-fts.mjs). Searching it with MATCH replaces a
+// 3.4GB `content LIKE '%...%'` table scan (47s -> ~5ms). If the index is absent
+// (e.g. an un-indexed corpus copy) every helper falls back to the old LIKE path,
+// so search keeps working either way.
+let _hasFts: boolean | null = null;
+function hasFts(db: any): boolean {
+  if (_hasFts !== null) return _hasFts;
+  try {
+    _hasFts = !!db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='judgments_fts'")
+      .get();
+  } catch {
+    _hasFts = false;
+  }
+  return _hasFts;
+}
+
+/** Subquery that resolves an FTS MATCH (bound as the next `?`) to judgment ids. */
+const FTS_MATCH_SUBQ =
+  "id IN (SELECT rowid FROM judgments_fts WHERE judgments_fts MATCH ?)";
+
+function cleanFtsTerm(t: string): string {
+  return t
+    .replace(/["']/g, " ")
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+/** Whole query as one quoted phrase — mirrors the old `LIKE '%query%'` adjacency. */
+function ftsPhrase(query: string): string | null {
+  const cleaned = cleanFtsTerm(query);
+  return cleaned.length >= 2 ? `"${cleaned}"` : null;
+}
+/** Does the query look like a reported citation (e.g. "2013 YLR 2054", "PLD 2020
+ *  SC 1")? Only then do we OR-in the citation/real_citation columns — those LIKE
+ *  scans cost a full table pass, so plain text queries skip them and stay on the
+ *  FTS index. */
+const CITATION_RE =
+  /\b(19|20)\d{2}\b|\b(SCMR|PLD|PCrLJ|PCRLJ|MLD|CLC|YLR|PLJ|NLR|SBLR|CLD|GBLR|KLR)\b/i;
+function looksLikeCitation(query: string): boolean {
+  return CITATION_RE.test(query);
+}
+
+/** Each term quoted and OR-joined — mirrors the old `content LIKE ? OR ...`. */
+function ftsAnyOf(terms: string[]): string | null {
+  const parts = terms
+    .map(cleanFtsTerm)
+    .filter((t) => t.length >= 2)
+    .map((t) => `"${t}"`);
+  return parts.length ? parts.join(" OR ") : null;
 }
 
 // Separate citation-network DB (built offline by scripts/build_citation_index.py).
@@ -70,14 +125,28 @@ function getCiteDb(): any {
 export function getCitedByCount(citation: string | null): number {
   try {
     if (!citation) return 0;
-    const cdb = getCiteDb();
-    if (!cdb) return 0;
     const key = citation.replace(/[^a-z0-9]/gi, "").toUpperCase();
-    if (key.length < 5) return 0;
-    const row = cdb.prepare("SELECT n FROM cited_counts WHERE cited_key = ?").get(key) as any;
-    return row?.n || 0;
+    return getCitedByCounts([citation])[key] || 0;
   } catch {
     return 0;
+  }
+}
+
+export function getCitedByCounts(citations: string[]): Record<string, number> {
+  try {
+    const cdb = getCiteDb();
+    if (!cdb) return {};
+    const keys = Array.from(
+      new Set(citations.map((citation) => citation.replace(/[^a-z0-9]/gi, "").toUpperCase()).filter((key) => key.length >= 5))
+    ).slice(0, 120);
+    if (!keys.length) return {};
+    const placeholders = keys.map(() => "?").join(",");
+    const rows = cdb.prepare(`SELECT cited_key, n FROM cited_counts WHERE cited_key IN (${placeholders})`).all(...keys) as { cited_key: string; n: number }[];
+    const out: Record<string, number> = {};
+    for (const row of rows) out[row.cited_key] = Number(row.n || 0);
+    return out;
+  } catch {
+    return {};
   }
 }
 
@@ -212,11 +281,22 @@ export function searchLocalJudgments(
     const db = getDb();
     if (!db || !query.trim()) return [];
 
-    const likeQ = `%${query.trim()}%`;
-    const params: (string | number)[] = [likeQ, likeQ, likeQ];
-
-    let where =
-      "(citation LIKE ? COLLATE NOCASE OR real_citation LIKE ? COLLATE NOCASE OR (processed = 1 AND content LIKE ?))";
+    const phrase = hasFts(db) ? ftsPhrase(query) : null;
+    const params: (string | number)[] = [];
+    let where: string;
+    if (phrase && !looksLikeCitation(query)) {
+      // common case: plain text search — pure FTS, no full-scan citation OR
+      where = `(processed = 1 AND ${FTS_MATCH_SUBQ})`;
+      params.push(phrase);
+    } else {
+      // citation-style query (or no FTS): also match the citation columns
+      const likeQ = `%${query.trim()}%`;
+      const contentClause = phrase
+        ? `(processed = 1 AND ${FTS_MATCH_SUBQ})`
+        : "(processed = 1 AND content LIKE ?)";
+      where = `(citation LIKE ? COLLATE NOCASE OR real_citation LIKE ? COLLATE NOCASE OR ${contentClause})`;
+      params.push(likeQ, likeQ, phrase ?? likeQ);
+    }
     if (reportedOnly) where += " AND real_citation IS NOT NULL";
 
     if (court && court !== "All Courts") {
@@ -297,18 +377,21 @@ export function searchSectionJudgments(
       return { where, params };
     };
 
+    const useFts = hasFts(db);
     for (const variant of variants.slice(0, 2)) {
       if (rows.length >= offset + limit) break;
-      const likeQ = `%${variant}%`;
+      const phrase = useFts ? ftsPhrase(variant) : null;
+      const matchClause = phrase ? FTS_MATCH_SUBQ : "content LIKE ? COLLATE NOCASE";
+      const matchParam = phrase ?? `%${variant}%`;
       const { where, params } = buildFilters();
       const contentRows = db.prepare(`
         SELECT id, citation, real_citation, court, year, title, processed,
           CASE WHEN content IS NOT NULL THEN substr(content, 1, 4000) ELSE NULL END AS content
         FROM judgments
-        WHERE ${where} AND processed = 1 AND content LIKE ? COLLATE NOCASE
+        WHERE ${where} AND processed = 1 AND ${matchClause}
         ORDER BY year DESC, ${courtPrioritySql()} ASC, id ASC
         LIMIT ?
-      `).all(...params, likeQ, Math.max(4, offset + limit - rows.length)) as any[];
+      `).all(...params, matchParam, Math.max(4, offset + limit - rows.length)) as any[];
       addRows(contentRows);
     }
 
@@ -342,10 +425,13 @@ export function relatedLocalJudgments(
       .slice(0, 6);
     if (!terms.length) return [];
 
-    const ors = terms.map(() => "content LIKE ? COLLATE NOCASE").join(" OR ");
-    const params: (string | number)[] = terms.map((t) => `%${t}%`);
+    const expr = hasFts(db) ? ftsAnyOf(terms) : null;
+    const params: (string | number)[] = expr ? [expr] : terms.map((t) => `%${t}%`);
+    const contentMatch = expr
+      ? FTS_MATCH_SUBQ
+      : `(${terms.map(() => "content LIKE ? COLLATE NOCASE").join(" OR ")})`;
 
-    let where = `processed = 1 AND (${ors})`;
+    let where = `processed = 1 AND ${contentMatch}`;
     if (reportedOnly) where += " AND real_citation IS NOT NULL";
     if (court && court !== "All Courts") {
       where += " AND court LIKE ?";
@@ -410,9 +496,12 @@ export function searchCandidatesFast(
     ).slice(0, 8);
     if (!cleaned.length) return [];
 
-    const ors = cleaned.map(() => "content LIKE ? COLLATE NOCASE").join(" OR ");
-    const params: (string | number)[] = cleaned.map((t) => `%${t}%`);
-    let where = `processed = 1 AND (${ors})`;
+    const expr = hasFts(db) ? ftsAnyOf(cleaned) : null;
+    const params: (string | number)[] = expr ? [expr] : cleaned.map((t) => `%${t}%`);
+    const contentMatch = expr
+      ? FTS_MATCH_SUBQ
+      : `(${cleaned.map(() => "content LIKE ? COLLATE NOCASE").join(" OR ")})`;
+    let where = `processed = 1 AND ${contentMatch}`;
     if (court && court !== "All Courts") {
       where += " AND court LIKE ?";
       params.push(`${court}%`);
@@ -505,10 +594,20 @@ export function countLocalJudgments(query: string, court?: string, year?: string
     const db = getDb();
     if (!db || !query.trim()) return 0;
 
-    const likeQ = `%${query.trim()}%`;
-    const params: (string | number)[] = [likeQ, likeQ, likeQ];
-    let where =
-      "(citation LIKE ? COLLATE NOCASE OR real_citation LIKE ? COLLATE NOCASE OR (processed = 1 AND content LIKE ?))";
+    const phrase = hasFts(db) ? ftsPhrase(query) : null;
+    const params: (string | number)[] = [];
+    let where: string;
+    if (phrase && !looksLikeCitation(query)) {
+      where = `(processed = 1 AND ${FTS_MATCH_SUBQ})`;
+      params.push(phrase);
+    } else {
+      const likeQ = `%${query.trim()}%`;
+      const contentClause = phrase
+        ? `(processed = 1 AND ${FTS_MATCH_SUBQ})`
+        : "(processed = 1 AND content LIKE ?)";
+      where = `(citation LIKE ? COLLATE NOCASE OR real_citation LIKE ? COLLATE NOCASE OR ${contentClause})`;
+      params.push(likeQ, likeQ, phrase ?? likeQ);
+    }
     if (reportedOnly) where += " AND real_citation IS NOT NULL";
     if (court && court !== "All Courts") { where += " AND court LIKE ?"; params.push(`${court}%`); }
     if (year && year !== "All years") { where += " AND year = ?"; params.push(parseInt(year)); }
@@ -535,9 +634,12 @@ export function countRelatedJudgments(query: string, court?: string, year?: stri
     const terms = query.split(/[^A-Za-z0-9]+/).filter((t) => t.length >= 4).slice(0, 6);
     if (!terms.length) return 0;
 
-    const ors = terms.map(() => "content LIKE ? COLLATE NOCASE").join(" OR ");
-    const params: (string | number)[] = terms.map((t) => `%${t}%`);
-    let where = `processed = 1 AND (${ors})`;
+    const expr = hasFts(db) ? ftsAnyOf(terms) : null;
+    const params: (string | number)[] = expr ? [expr] : terms.map((t) => `%${t}%`);
+    const contentMatch = expr
+      ? FTS_MATCH_SUBQ
+      : `(${terms.map(() => "content LIKE ? COLLATE NOCASE").join(" OR ")})`;
+    let where = `processed = 1 AND ${contentMatch}`;
     if (reportedOnly) where += " AND real_citation IS NOT NULL";
     if (court && court !== "All Courts") { where += " AND court LIKE ?"; params.push(`${court}%`); }
     if (year && year !== "All years") { where += " AND year = ?"; params.push(parseInt(year)); }

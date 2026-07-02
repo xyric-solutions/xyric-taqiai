@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   X, Bookmark, Copy, Check, Sparkles, Scale, Building2,
-  ScrollText, Quote, BookText, Loader2, BadgeCheck, Network,
+  ScrollText, Quote, BookText, Loader2, BadgeCheck, Network, Download,
 } from "lucide-react";
 import {
   isJudgmentSaved, toggleSavedJudgment, onSavedJudgmentsChange,
@@ -127,6 +127,20 @@ export default function JudgmentReader({ judgment, onClose, onSearchCitation }: 
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleDownload = () => {
+    if (!content) return;
+    const safeName = judgment.citation.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || `judgment-${judgment.id}`;
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${safeName}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const handleHeadnote = useCallback(async () => {
     if (headnote) { setHeadnote(null); return; }
     if (!content) return;
@@ -173,6 +187,11 @@ export default function JudgmentReader({ judgment, onClose, onSearchCitation }: 
             className="flex items-center gap-1.5 px-3 py-2 text-[12px] font-medium rounded-lg transition-all disabled:opacity-40"
             style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}>
             {copied ? <Check className="h-3.5 w-3.5 text-success-500" /> : <Copy className="h-3.5 w-3.5" />} {copied ? "Copied" : "Copy"}
+          </button>
+          <button onClick={handleDownload} disabled={!content}
+            className="flex items-center gap-1.5 px-3 py-2 text-[12px] font-medium rounded-lg transition-all disabled:opacity-40"
+            style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}>
+            <Download className="h-3.5 w-3.5" /> Download
           </button>
           <button onClick={handleSave}
             className="flex items-center gap-1.5 px-3 py-2 text-[12px] font-semibold rounded-lg transition-all"

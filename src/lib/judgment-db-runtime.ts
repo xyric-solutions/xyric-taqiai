@@ -11,6 +11,7 @@ import {
   relatedLocalJudgments as relatedLocalJudgmentsSqlite,
   searchLocalJudgments as searchLocalJudgmentsSqlite,
   searchSectionJudgments as searchSectionJudgmentsSqlite,
+  getCitedByCounts as getCitedByCountsSqlite,
   type JudgmentRow,
   type JudgmentSearchResult,
   type SortMode,
@@ -239,7 +240,7 @@ async function searchPg(
       matchSql = `(${matchSql} OR j.citation ILIKE $${params.length} OR j.real_citation ILIKE $${params.length})`;
     }
     where.push(matchSql);
-    params.push(Math.min(1000, Math.max(150, (offset + limit) * 8)));
+    params.push(Math.min(350, Math.max(limit + offset + 25, (offset + limit) * 2)));
 
     const rows = await prisma.$queryRawUnsafe<any[]>(
       `
@@ -312,7 +313,7 @@ export async function searchSectionJudgments(
       const params: any[] = [expr];
       const where = ["j.processed = 1", `${textVectorSql("j")} @@ q.query`];
       addFilters(where, params, { court, year, reportedOnly });
-      params.push(Math.min(500, Math.max(100, (offset + limit) * 8)));
+      params.push(Math.min(300, Math.max(limit + offset + 20, (offset + limit) * 2)));
 
       const rows = await prisma.$queryRawUnsafe<any[]>(
         `
@@ -519,4 +520,26 @@ export async function getCitedByCount(citation: string | null): Promise<number> 
     }
   }
   return getCitedByCountSqlite(citation);
+}
+
+export async function getCitedByCounts(citations: string[]): Promise<Record<string, number>> {
+  if (usePostgres()) {
+    try {
+      const keys = Array.from(
+        new Set(citations.map((citation) => citation.replace(/[^a-z0-9]/gi, "").toUpperCase()).filter((key) => key.length >= 5))
+      ).slice(0, 120);
+      if (!keys.length) return {};
+      const placeholders = keys.map((_, idx) => `$${idx + 1}`).join(",");
+      const rows = await prisma.$queryRawUnsafe<{ cited_key: string; n: number }[]>(
+        `SELECT cited_key, n FROM legal_cited_counts WHERE cited_key IN (${placeholders})`,
+        ...keys
+      );
+      const out: Record<string, number> = {};
+      for (const row of rows) out[row.cited_key] = Number(row.n || 0);
+      return out;
+    } catch {
+      return {};
+    }
+  }
+  return getCitedByCountsSqlite(citations);
 }

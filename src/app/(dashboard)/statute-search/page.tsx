@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Search, BookMarked, Copy, Check, X, Sparkles, Library, Scale, ArrowRight } from "lucide-react";
+import { Search, BookMarked, Copy, Check, X, Library, Scale, ArrowRight, FileText, Gavel } from "lucide-react";
 
 // ── Statute catalogue ──────────────────────────────────────────────────────────
 
@@ -57,11 +57,57 @@ const STATUTES = [
   },
 ];
 
-interface Result { raw: string; query: string; }
+interface StatuteHit {
+  actId: number;
+  actName: string;
+  province: string;
+  docType: string;
+  year: number | null;
+  sectionNo: string | null;
+  title: string | null;
+  body: string;
+}
 
-function detectBinding(text: string): "binding" | "persuasive" | null {
-  if (/supreme court|SCMR/i.test(text)) return "binding";
-  if (/(high court|PCrLJ|MLD|CLC|YLR|lahore high court|sindh high court)/i.test(text)) return "persuasive";
+interface LocalJudgment {
+  id: number;
+  citation: string;
+  reported: boolean;
+  court: string;
+  year: number;
+  title: string | null;
+  caseNo: string | null;
+  passages: string[];
+  processed: number;
+  related?: boolean;
+}
+
+interface JudgmentSearchState {
+  query: string;
+  loading: boolean;
+  error: string;
+  results: LocalJudgment[];
+}
+
+function codeForAct(actName: string): string | null {
+  if (/penal code/i.test(actName)) return "PPC";
+  if (/criminal procedure/i.test(actName)) return "CrPC";
+  if (/civil procedure/i.test(actName)) return "CPC";
+  if (/qanun-e-shahadat/i.test(actName)) return "QSO";
+  if (/muslim family laws/i.test(actName)) return "MFLO";
+  if (/specific relief/i.test(actName)) return "SRA";
+  if (/family courts/i.test(actName)) return "FCA";
+  return null;
+}
+
+function judgmentQueryFor(hit: StatuteHit, fallback: string): string {
+  if (!hit.sectionNo) return fallback;
+  const code = codeForAct(hit.actName);
+  return code ? `${code} Section ${hit.sectionNo}` : `${hit.actName} Section ${hit.sectionNo}`;
+}
+
+function authority(court: string): "binding" | "persuasive" | null {
+  if (/supreme court/i.test(court)) return "binding";
+  if (/high court|shariat/i.test(court)) return "persuasive";
   return null;
 }
 
@@ -70,25 +116,30 @@ function detectBinding(text: string): "binding" | "persuasive" | null {
 export default function StatuteSearchPage() {
   const [query, setQuery] = useState("");
   const [activeStatute, setActiveStatute] = useState<string>("PPC");
-  const [result, setResult] = useState<Result | null>(null);
+  const [results, setResults] = useState<StatuteHit[]>([]);
+  const [searchedQuery, setSearchedQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [judgments, setJudgments] = useState<JudgmentSearchState | null>(null);
 
   const current = STATUTES.find((s) => s.code === activeStatute)!;
 
   const handleSearch = async (q?: string) => {
-    const finalQuery = q ?? query;
-    if (!finalQuery.trim()) return;
-    setLoading(true); setError(""); setResult(null);
+    const finalQuery = (q ?? query).trim();
+    if (!finalQuery) return;
+    setLoading(true);
+    setError("");
+    setResults([]);
+    setSearchedQuery(finalQuery);
+    setJudgments(null);
+
     try {
-      const fd = new FormData();
-      fd.append("query", `Find Pakistani court judgments that cited and interpreted ${finalQuery}. List key judgments, their citations, courts, and the legal principle established regarding this section.`);
-      fd.append("mode", "search");
-      const res = await fetch("/api/ai/judgment", { method: "POST", body: fd });
+      const params = new URLSearchParams({ q: finalQuery, limit: "8" });
+      const res = await fetch(`/api/statutes/search?${params}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Search failed");
-      setResult({ raw: data.result, query: finalQuery });
+      setResults(data.results || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
     } finally {
@@ -97,8 +148,33 @@ export default function StatuteSearchPage() {
   };
 
   const handleSectionClick = (no: string) => { const q = `${activeStatute} Section ${no}`; setQuery(q); handleSearch(q); };
-  const handleCopy = () => { if (result) navigator.clipboard.writeText(result.raw); setCopied(true); setTimeout(() => setCopied(false), 2000); };
-  const binding = result ? detectBinding(result.raw) : null;
+  const handleCopy = async (hit: StatuteHit) => {
+    const key = `${hit.actId}:${hit.sectionNo || hit.title || hit.actName}`;
+    const section = hit.sectionNo ? `Section ${hit.sectionNo}` : "Matched text";
+    const text = `${hit.actName}${hit.year ? `, ${hit.year}` : ""}\n${section}${hit.title ? ` - ${hit.title}` : ""}\n\n${hit.body}`;
+    await navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 2000);
+  };
+
+  const handleFindJudgments = async (hit: StatuteHit) => {
+    const q = judgmentQueryFor(hit, searchedQuery || query);
+    setJudgments({ query: q, loading: true, error: "", results: [] });
+    try {
+      const params = new URLSearchParams({ q, sort: "relevance", page: "1" });
+      const res = await fetch(`/api/judgments/local?${params}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Judgment search failed");
+      setJudgments({ query: q, loading: false, error: "", results: data.results || [] });
+    } catch (err) {
+      setJudgments({
+        query: q,
+        loading: false,
+        error: err instanceof Error ? err.message : "Judgment search failed",
+        results: [],
+      });
+    }
+  };
 
   const card = { background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)" };
 
@@ -111,7 +187,7 @@ export default function StatuteSearchPage() {
           <span className="w-9 h-9 rounded-xl grid place-items-center bg-primary-500/10"><Library className="h-5 w-5 text-primary-400" strokeWidth={1.75} /></span>
           Statute Search
         </h1>
-        <p className="text-[13px] mt-1.5" style={{ color: "var(--text-secondary)" }}>Pick a section, find every judgment that cited and interpreted it.</p>
+        <p className="text-[13px] mt-1.5" style={{ color: "var(--text-secondary)" }}>Search actual Pakistani statute text, then find judgments citing a section.</p>
       </div>
 
       {/* ── Search bar ── */}
@@ -159,7 +235,7 @@ export default function StatuteSearchPage() {
             <button key={sec.no} onClick={() => handleSectionClick(sec.no)}
               className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left group transition-all hover:bg-[var(--bg-surface-2)]"
               style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)" }}>
-              <span className="text-[12px] font-bold font-mono flex-shrink-0 px-1.5 py-0.5 rounded-md" style={{ color: current.color, background: `${current.color}14` }}>§{sec.no}</span>
+              <span className="text-[12px] font-bold font-mono flex-shrink-0 px-1.5 py-0.5 rounded-md" style={{ color: current.color, background: `${current.color}14` }}>Sec {sec.no}</span>
               <span className="flex-1 text-[12.5px] truncate" style={{ color: "var(--text-secondary)" }}>{sec.title}</span>
               <ArrowRight className="h-3.5 w-3.5 flex-shrink-0 opacity-0 group-hover:opacity-100 group-hover:text-primary-400 transition-all" style={{ color: "var(--text-tertiary)" }} strokeWidth={2} />
             </button>
@@ -177,34 +253,110 @@ export default function StatuteSearchPage() {
       {loading && (
         <div className="rounded-xl p-12 flex flex-col items-center gap-4" style={card}>
           <div className="flex items-center gap-1.5">{[0, 150, 300].map((d) => <div key={d} className="w-2.5 h-2.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />)}</div>
-          <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>Searching Pakistani case law…</p>
+          <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>Searching Pakistani statutes...</p>
         </div>
       )}
 
-      {result && !loading && (
+      {!loading && searchedQuery && results.length === 0 && !error && (
+        <div className="rounded-xl p-10 flex flex-col items-center text-center" style={card}>
+          <FileText className="h-10 w-10 mb-3" style={{ color: "var(--border-strong)" }} />
+          <h3 className="text-sm font-bold" style={{ color: "var(--text-secondary)" }}>No statute section matched</h3>
+          <p className="text-[12px] mt-1.5 max-w-sm" style={{ color: "var(--text-tertiary)" }}>Try a code plus section number, for example PPC 302, CrPC 497, CPC 9, or Article 199.</p>
+        </div>
+      )}
+
+      {!loading && results.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-[12px] font-medium" style={{ color: "var(--text-tertiary)" }}>
+            <FileText className="h-4 w-4 text-primary-400" />
+            {results.length} statute result{results.length > 1 ? "s" : ""} for <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{searchedQuery}</span>
+          </div>
+          {results.map((hit) => {
+            const key = `${hit.actId}:${hit.sectionNo || hit.title || hit.actName}`;
+            return (
+              <div key={key} className="rounded-xl overflow-hidden" style={card}>
+                <div className="flex items-start justify-between px-5 py-3.5 gap-3 flex-wrap" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <span className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>{hit.actName}</span>
+                      {hit.year && <span className="text-[11px] font-mono" style={{ color: "var(--text-tertiary)" }}>{hit.year}</span>}
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-md" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}>{hit.province}</span>
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-md" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-tertiary)" }}>{hit.docType}</span>
+                    </div>
+                    <div className="mt-1.5 text-[12px]" style={{ color: "var(--text-secondary)" }}>
+                      {hit.sectionNo ? `Section ${hit.sectionNo}` : "Matched text"}{hit.title ? ` - ${hit.title}` : ""}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => handleCopy(hit)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg hover:text-[var(--text-primary)] transition-all"
+                      style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}>
+                      {copiedKey === key ? <Check className="h-3.5 w-3.5 text-success-500" /> : <Copy className="h-3.5 w-3.5" />}
+                      {copiedKey === key ? "Copied" : "Copy"}
+                    </button>
+                    <button onClick={() => handleFindJudgments(hit)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-primary-500 hover:bg-primary-400 text-[#07090f] transition-all">
+                      <Gavel className="h-3.5 w-3.5" /> Judgments
+                    </button>
+                  </div>
+                </div>
+                <div className="p-5">
+                  <div className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>{hit.body}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {judgments && (
         <div className="rounded-xl overflow-hidden" style={card}>
           <div className="flex items-center justify-between px-5 py-3.5 gap-3 flex-wrap" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-            <div className="flex items-center gap-2.5 flex-wrap min-w-0">
-              <Sparkles className="h-4 w-4 text-ai-500 flex-shrink-0" strokeWidth={2} />
-              <span className="text-sm font-bold font-mono truncate" style={{ color: "var(--text-primary)" }}>{result.query}</span>
-              {binding === "binding" && <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-success-500/10 text-success-500 border border-success-500/25"><Scale className="h-2.5 w-2.5" strokeWidth={2.5} />Binding · SC</span>}
-              {binding === "persuasive" && <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-warning-500/10 text-warning-500 border border-warning-500/25"><Scale className="h-2.5 w-2.5" strokeWidth={2.5} />Persuasive · HC</span>}
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Gavel className="h-4 w-4 text-primary-400 flex-shrink-0" />
+              <span className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>Judgments citing</span>
+              <span className="text-sm font-mono truncate" style={{ color: "var(--text-secondary)" }}>{judgments.query}</span>
             </div>
-            <button onClick={handleCopy} className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg hover:text-[var(--text-primary)] transition-all" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}>
-              {copied ? <Check className="h-3.5 w-3.5 text-success-500" /> : <Copy className="h-3.5 w-3.5" />}{copied ? "Copied!" : "Copy"}
-            </button>
           </div>
-          <div className="p-5"><div className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>{result.raw}</div></div>
+          <div className="p-5 space-y-3">
+            {judgments.loading && <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>Searching judgments...</p>}
+            {judgments.error && <p className="text-sm text-danger-500">{judgments.error}</p>}
+            {!judgments.loading && !judgments.error && judgments.results.length === 0 && (
+              <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>No reported judgments matched this section.</p>
+            )}
+            {!judgments.loading && !judgments.error && judgments.results.slice(0, 8).map((j) => {
+              const auth = authority(j.court);
+              return (
+                <div key={j.id} className="rounded-xl p-4" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)" }}>
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[13px] font-bold font-mono" style={{ color: "var(--text-primary)" }}>{j.citation}</span>
+                        {auth && (
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md ${auth === "binding" ? "bg-success-500/10 text-success-500 border border-success-500/25" : "bg-warning-500/10 text-warning-500 border border-warning-500/25"}`}>
+                            <Scale className="h-2.5 w-2.5" strokeWidth={2.5} />{auth === "binding" ? "Binding" : "Persuasive"}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[12px]" style={{ color: "var(--text-tertiary)" }}>{j.court}{j.year ? ` - ${j.year}` : ""}</div>
+                      {(j.title || j.caseNo) && <div className="mt-2 text-[13px] font-medium" style={{ color: "var(--text-secondary)" }}>{j.title || j.caseNo}</div>}
+                    </div>
+                  </div>
+                  {j.passages?.[0] && <p className="mt-3 text-[12px] leading-relaxed" style={{ color: "var(--text-tertiary)" }}>{j.passages[0]}</p>}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {!result && !loading && !error && (
+      {!searchedQuery && !loading && !error && (
         <div className="rounded-xl p-10 flex flex-col items-center text-center" style={card}>
           <div className="w-16 h-16 rounded-2xl grid place-items-center mb-4" style={{ background: "var(--bg-surface-2)" }}><BookMarked className="h-7 w-7" style={{ color: "var(--text-tertiary)" }} /></div>
           <h3 className="text-sm font-bold" style={{ color: "var(--text-secondary)" }}>Tap a section above, or type one to search</h3>
-          <p className="text-[12px] mt-1.5 max-w-sm" style={{ color: "var(--text-tertiary)" }}>Find every reported judgment that cited and interpreted a statute section, with its citation and the principle it established.</p>
+          <p className="text-[12px] mt-1.5 max-w-sm" style={{ color: "var(--text-tertiary)" }}>Find the actual statute text first, then pull judgments that cited the section.</p>
           <div className="flex flex-wrap justify-center gap-2 mt-5">
-            {["PPC 302", "CrPC 497", "CPC O.XXXIX", "MFLO Section 7", "SRA Section 12"].map((ex) => (
+            {["PPC 302", "CrPC 497", "CPC 9", "MFLO Section 7", "SRA Section 12"].map((ex) => (
               <button key={ex} onClick={() => { setQuery(ex); handleSearch(ex); }} className="px-3 py-1.5 text-[11px] font-medium rounded-lg font-mono hover:text-primary-400 hover:border-primary-500/30 transition-all" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}>{ex}</button>
             ))}
           </div>

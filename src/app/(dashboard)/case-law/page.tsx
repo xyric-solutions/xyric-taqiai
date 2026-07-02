@@ -5,7 +5,7 @@ import {
   Search, Upload, MessageSquare, X, Copy, Check,
   Scale, Send, Lightbulb, FileText, Gavel,
   BookMarked, Sparkles, Database, ChevronDown,
-  Bookmark, BookOpen, Eye, ChevronLeft, ChevronRight, Building2,
+  Bookmark, BookOpen, Eye, ChevronLeft, ChevronRight, Building2, Network,
 } from "lucide-react";
 import {
   isJudgmentSaved, toggleSavedJudgment, onSavedJudgmentsChange,
@@ -16,7 +16,8 @@ import JudgmentReader from "@/components/documents/JudgmentReader";
 
 type SearchMode = "smart" | "keyword" | "citation";
 type ToolTab = "search" | "upload" | "qa";
-type SortMode = "relevance" | "newest" | "oldest";
+type SortMode = "relevance" | "newest" | "oldest" | "cited";
+type ResultLimit = 25 | 50 | 100;
 interface ChatMessage { role: "user" | "ai"; text: string; }
 interface LocalJudgment {
   id: number;
@@ -29,6 +30,7 @@ interface LocalJudgment {
   passages: string[];
   processed: number;
   related?: boolean;
+  citedBy?: number;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -41,9 +43,11 @@ const COURTS = [
 const YEARS = ["All years", ...Array.from({ length: 2026 - 1947 + 1 }, (_, i) => String(2026 - i))];
 const SORTS: { id: SortMode; label: string; note: string }[] = [
   { id: "relevance", label: "Relevance", note: "Most relevant first" },
+  { id: "cited", label: "Cited In", note: "Most cited first" },
   { id: "newest", label: "Newest first", note: "Latest year first" },
   { id: "oldest", label: "Oldest first", note: "Earliest year first" },
 ];
+const RESULT_LIMITS = ["25", "50", "100"];
 
 function authority(court: string): "binding" | "persuasive" | null {
   if (/supreme court/i.test(court)) return "binding";
@@ -95,6 +99,7 @@ export default function JudgmentSearchPage() {
   const [courtFilter, setCourtFilter] = useState("All Courts");
   const [yearFilter, setYearFilter] = useState("All years");
   const [sortMode, setSortMode] = useState<SortMode>("relevance");
+  const [resultLimit, setResultLimit] = useState<ResultLimit>(100);
   // Default: only reported (citable) judgments — the noise-free, court-usable set.
   const [reportedOnly, setReportedOnly] = useState(true);
 
@@ -108,6 +113,7 @@ export default function JudgmentSearchPage() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [totalPages, setTotalPages] = useState(1);
+  const [totalResults, setTotalResults] = useState(0);
   const resultsTopRef = useRef<HTMLDivElement>(null);
 
   // Per-card UI state
@@ -176,7 +182,7 @@ export default function JudgmentSearchPage() {
 
   const runSearch = async (
     overrideQuery?: string,
-    opts?: { court?: string; year?: string; sort?: SortMode; page?: number; reported?: boolean }
+    opts?: { court?: string; year?: string; sort?: SortMode; page?: number; reported?: boolean; limit?: ResultLimit }
   ) => {
     const q = (overrideQuery ?? query).trim();
     if (!q) return;
@@ -185,6 +191,7 @@ export default function JudgmentSearchPage() {
     const sort = opts?.sort ?? sortMode;
     const nextPage = opts?.page ?? 1;
     const reported = opts?.reported ?? reportedOnly;
+    const limit = opts?.limit ?? resultLimit;
 
     setToolTab("search");
     setSearched(true);
@@ -198,15 +205,18 @@ export default function JudgmentSearchPage() {
         if (court !== "All Courts") params.set("court", court);
         if (year !== "All years") params.set("year", year);
         if (!reported) params.set("reported", "0");
+        params.set("limit", String(limit));
         const res = await fetch(`/api/judgments/semantic?${params}`);
         const data = await res.json();
         setLocalResults(data.results || []);
+        setTotalResults((data.results || []).length);
         setIsRelated(false);
         setSemanticFallback(data.available === false);
         setHasMore(false); setPage(1); setTotalPages(1);
         setPassageIdx({});
       } catch {
         setLocalResults([]);
+        setTotalResults(0);
       }
       setLocalLoading(false);
       return;
@@ -214,7 +224,7 @@ export default function JudgmentSearchPage() {
     setSemanticFallback(false);
 
     try {
-      const params = new URLSearchParams({ q, sort, page: String(nextPage) });
+      const params = new URLSearchParams({ q, sort, page: String(nextPage), limit: String(limit) });
       if (court !== "All Courts") params.set("court", court);
       if (year !== "All years") params.set("year", year);
       if (!reported) params.set("reported", "0");
@@ -227,12 +237,14 @@ export default function JudgmentSearchPage() {
       setHasMore(!!data.hasMore);
       setPage(data.page || nextPage);
       setTotalPages(data.totalPages || 1);
+      setTotalResults(data.total || (data.results || []).length);
       setPassageIdx({});
       if (data.stats) setLocalStats(data.stats);
       // jump back to the top of the list when paging
       if (nextPage > 1) resultsTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch {
       setLocalResults([]);
+      setTotalResults(0);
     }
     setLocalLoading(false);
   };
@@ -409,6 +421,11 @@ export default function JudgmentSearchPage() {
                   <Scale className="h-2.5 w-2.5" strokeWidth={2.5} />{auth === "binding" ? "Binding" : "Persuasive"}
                 </span>
               )}
+              {j.citedBy ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-primary-500/10 text-primary-300 border border-primary-500/25">
+                  <Network className="h-2.5 w-2.5" strokeWidth={2.5} />Cited {j.citedBy.toLocaleString()} time{j.citedBy > 1 ? "s" : ""}
+                </span>
+              ) : null}
             </div>
             <button onClick={() => handleSave(j)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-lg flex-shrink-0 transition-all"
@@ -575,9 +592,9 @@ export default function JudgmentSearchPage() {
                     {searchMode === "smart" && !localLoading && !semanticFallback && localResults.length > 0 && <Sparkles className="h-3.5 w-3.5 text-ai-500" />}
                     {localLoading ? "Searching…"
                       : localResults.length === 0 ? "No judgments found."
-                      : isRelated ? `No exact match — ${localResults.length} related judgment${localResults.length > 1 ? "s" : ""}`
+                      : isRelated ? `No exact match — showing ${localResults.length} of ${totalResults} related judgment${totalResults !== 1 ? "s" : ""}`
                       : searchMode === "smart" && !semanticFallback ? `${localResults.length} judgment${localResults.length > 1 ? "s" : ""} by meaning`
-                      : `${localResults.length} judgment${localResults.length > 1 ? "s" : ""}`}
+                      : `Showing ${localResults.length} of ${totalResults} judgment${totalResults !== 1 ? "s" : ""}`}
                   </p>
                   <div className="flex items-center gap-1.5 text-[12px]">
                     <span style={{ color: "var(--text-tertiary)" }}>Didn&apos;t find it?</span>
@@ -695,6 +712,19 @@ export default function JudgmentSearchPage() {
                       <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all" style={{ left: reportedOnly ? "18px" : "2px" }} />
                     </span>
                   </button>
+                  <div>
+                    <label className="block text-[11px] mb-1.5" style={{ color: "var(--text-secondary)" }}>Results per search</label>
+                    <FilterSelect
+                      label="Results per search"
+                      value={String(resultLimit)}
+                      options={RESULT_LIMITS}
+                      onChange={(v) => {
+                        const next = Number(v) as ResultLimit;
+                        setResultLimit(next);
+                        runSearch(undefined, { limit: next, page: 1 });
+                      }}
+                    />
+                  </div>
                   <div>
                     <label className="block text-[11px] mb-1.5" style={{ color: "var(--text-secondary)" }}>Court</label>
                     <FilterSelect label="Court" value={courtFilter} options={COURTS} onChange={(v) => { setCourtFilter(v); runSearch(undefined, { court: v }); }} />
