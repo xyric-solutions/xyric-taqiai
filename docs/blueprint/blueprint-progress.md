@@ -12,7 +12,7 @@ Segments → batches (1:1): S1.1, S1.2, S1.3, S1.4, S1.5, S2.1, S2.2, S2.3, S2.4
 
 ## Do Not Assume
 - The product is **already built and live** (13 modules). Segments document the shipped surface in Forgeflow-batch shape; Phase 5 segments (confidence, security, validation) are the **remaining forward work** from the 2026-06-30 Xyric-framework audit — treat those as not-yet-verified.
-- Docs historically claimed SQLite app DB; **current truth is Railway Postgres via Prisma** (reference corpora remain read-only SQLite). This Blueprint set is the corrected source of truth.
+- Docs historically claimed SQLite app DB; **current truth is Railway Postgres via Prisma for app data AND the reference corpora** (277,967 judgments + 64,547 statute sections live in Railway Postgres with GIN FTS; read-only SQLite is the local-dev path, selected by the `usePostgres()` runtime switch on `DATABASE_URL`). This Blueprint set is the corrected source of truth.
 
 ## Stage Status
 | Stage | Status | Gate status | Doc | Last evidence |
@@ -78,4 +78,4 @@ Segments → batches (1:1): S1.1, S1.2, S1.3, S1.4, S1.5, S2.1, S2.2, S2.3, S2.4
 | Date | Check | Result | Evidence | Notes |
 |------|-------|--------|----------|-------|
 | 2026-07-02 | Blueprint traceability (orphan check) | pass | `traceability-matrix.md` | 0 orphans; 13 caps / 20 reqs / 19 comps / 23 segments |
-| 2026-06-30 | Xyric-framework audit | partial | `../../xyric-wiki/PRODUCTS/taqiai/Xyric-Framework-Audit.md` | Feature maturity high; governance medium — Phase 5 addresses |
+| 2026-06-30 | Xyric-framework audit | partial | `Xyric-Framework-Audit.md` (xyric-solutions/xyric-wiki repo → `PRODUCTS/taqiai/`) | Feature maturity high; governance medium — Phase 5 addresses |

@@ -10,7 +10,7 @@
 2. `blueprint-progress.md` (the full ledger)
 3. `phase-plan.md` (Phase 5 is the open work)
 4. `personalization-gate.md`
-5. `../../xyric-wiki/PRODUCTS/taqiai/Xyric-Framework-Audit.md` (the P0/P1 source of Phase 5)
+5. `Xyric-Framework-Audit.md` (xyric-solutions/xyric-wiki repo → `PRODUCTS/taqiai/`) (the P0/P1 source of Phase 5)
 
 ## Start By
 ```bash
@@ -49,7 +49,7 @@ Expected state:
 Goal: Build **S5.1 — AI Confidence Envelope & Indicators**.
 Inputs:
 - `segments/S5.1-ai-confidence-envelope.md`
-- `../../xyric-wiki/PRODUCTS/taqiai/Xyric-Framework-Audit.md` (P0-01 envelope spec)
+- `Xyric-Framework-Audit.md` (xyric-solutions/xyric-wiki repo → `PRODUCTS/taqiai/`) (P0-01 envelope spec)
 Expected outputs:
 - Standard AI response envelope on AI endpoints (`{ data, confidence, verification_status, evidence, model_version }`)
 - Confidence fields on relevant Prisma models; UI confidence indicators

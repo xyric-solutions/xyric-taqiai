@@ -7,7 +7,7 @@
 
 ## System overview
 
-TaqiAI is a **Next.js 16 App-Router monolith** (React 19 + TypeScript) that serves both the UI and the API routes. AI generation runs through a single **Gemini LLM gateway** with a model fallback chain. Legal knowledge is served from three data planes: **Railway Postgres via Prisma** for user/app data (users, documents, matters, diary, chat), and two **read-only SQLite reference corpora** (judgments, statutes) queried at runtime for retrieval-augmented grounding. A separate **Python semantic-search service** (port 8137, fastembed) provides meaning-based judgment search with transparent fallback to keyword FTS. Deterministic work (tax/fees) runs in a rules engine that never touches the LLM.
+TaqiAI is a **Next.js 16 App-Router monolith** (React 19 + TypeScript) that serves both the UI and the API routes. AI generation runs through a single **Gemini LLM gateway** with a model fallback chain. Legal knowledge is served through a **runtime switch** (`usePostgres()` keyed on `DATABASE_URL`): on **Railway, both app data and the legal reference corpora live in Postgres via Prisma** — user/app data (users, documents, matters, diary, chat) plus the migrated corpora (277,967 judgments, 64,547 statute sections) with GIN full-text indexes; in **local dev** the corpora are read-only SQLite files. A separate **Python semantic-search service** (port 8137, fastembed) provides meaning-based judgment search **in local dev only** — it does not run on Railway, so production transparently falls back to keyword FTS. Deterministic work (tax/fees) runs in a rules engine that never touches the LLM.
 
 ```mermaid
 flowchart LR
@@ -49,12 +49,12 @@ flowchart LR
 | C15 | Auth & Accounts | JWT (jose) + bcrypt; middleware; profile (`auth/*`, `middleware.ts`, `auth.ts`) | all (gate) | Build | ADR-5 |
 | C16 | Gemini LLM Gateway | Single generation gateway w/ model fallback chain (`gemini.ts`, `gemini-helper.ts`) | R1.x, R2.1, R3.1, R8.1, R9.1, R10.1, R11.1 | Buy (API) | ADR-2 |
 | C17 | AI Trust / Confidence Layer | Standard response envelope + confidence dimensions + UI indicators (target state) | R13.1, R13.2 | Build | ADR-7 |
-| C18 | Persistence Layer | Railway Postgres via Prisma (app data) + read-only SQLite reference DBs (runtime switch: `*-db-runtime.ts`) | R4.1, R5.1, R12.x, R1.2 | Build/Buy | ADR-3 |
+| C18 | Persistence Layer | Railway Postgres via Prisma for **app data AND reference corpora** on Railway; read-only SQLite corpora in local dev — runtime switch `usePostgres()` in `*-db-runtime.ts` selects by `DATABASE_URL` | R4.1, R5.1, R12.x, R1.2 | Build/Buy | ADR-3 |
 | C19 | Design System (Midnight Qanoon) | Tokens in `globals.css`; shared `Sidebar`/`Topbar`/`ui/*`; RTL/Urdu; a11y | all UI | Build | — |
 
 ## Data models
 
-> App data (Postgres via Prisma). Reference corpora (judgments/statutes) are read-only SQLite, rebuilt by scrapers — additive, reversible by swapping the DB file.
+> App data on Postgres via Prisma. Reference corpora (judgments/statutes) are served from **Postgres on Railway** (277,967 judgments, 64,547 sections, GIN FTS indexes `legal_judgments_search_idx` / `legal_sections_search_idx`) and from read-only SQLite in local dev; rebuilt by scrapers — additive, reversible.
 
 | Entity | Key fields | Owned by component | Migration / rollback | Notes |
 |--------|-----------|--------------------|----------------------|-------|
@@ -119,8 +119,8 @@ flowchart LR
 |-----|----------|---------|------------------------------|--------|
 | ADR-1 | App architecture | Next.js App-Router monolith / split FE+BE / microservices | **Monolith** — one team, one deploy, shared types; fastest to ship & maintain | Decided |
 | ADR-2 | LLM provider strategy | Direct Gemini + fallback chain / multi-provider abstraction / self-host | **Direct Gemini with model fallback** — cost/quality fit; abstraction deferred | Decided |
-| ADR-3 | App DB | SQLite / Postgres on Railway | **Postgres via Prisma** for app data; SQLite kept read-only for reference corpora | Decided (migration complete) |
-| ADR-4 | Legal corpus storage & search | All-Postgres / SQLite RO + Python embeddings / external search svc | **SQLite RO corpora + Python semantic service w/ keyword fallback** — free, portable, degrades gracefully | Decided |
+| ADR-3 | App DB | SQLite / Postgres on Railway | **Postgres via Prisma** for app data; reference corpora also migrated to Postgres on Railway, read-only SQLite kept as the local-dev path | Decided (migration complete) |
+| ADR-4 | Legal corpus storage & search | All-Postgres / SQLite RO + Python embeddings / external search svc | **Runtime switch: Postgres corpora on Railway (GIN FTS), read-only SQLite in local dev; Python semantic service is local-only → keyword fallback on Railway** — free, portable, degrades gracefully | Decided |
 | ADR-5 | Auth/session model | JWT (jose) / session store / third-party auth | **JWT now**; revisit managed auth later; **remove fallback secret** (Phase 5) | Decided, hardening open |
 | ADR-6 | Deployment & region | Railway / other PaaS | **Railway** (`prisma db push` on deploy); data-region/PDPB policy to finalise | Decided, policy open |
 | ADR-7 | AI confidence contract | none / per-route ad hoc / standard envelope + confidence schema | **Standard response envelope + confidence dimensions + UI indicators** | Open — Phase 5 |

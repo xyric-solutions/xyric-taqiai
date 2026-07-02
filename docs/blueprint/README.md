@@ -21,6 +21,15 @@ This folder is the complete **Blueprint**-standard documentation for **TaqiAI** 
 | `personalization-gate.md` | Every gated decision, its AI default, and the answer |
 | `blueprint-progress.md` | The durable progress ledger (stage/phase/segment/gate status) |
 | `next-steps-handoff.md` | Cold-start handoff — one active next action (build S5.1) |
+| `BLUEPRINT.md` | The Blueprint method guide (Part A method · Part B worked example · Part C mechanics) |
+| `templates/` | Blank `<PLACEHOLDER>` scaffolds for every artifact — fill a copy when adding a stage/segment |
+| `verify/portability-check.mjs` | Self-check: stages locked, no placeholders, segments batch-shaped, BUILD_READY, no orphans |
+
+## Verify this instance
+```bash
+node docs/blueprint/verify/portability-check.mjs docs/blueprint
+```
+Green = build-ready and framework-compliant. Run it after any edit and before handoff to Forgeflow.
 
 ## The traceability chain
 ```
@@ -32,4 +41,4 @@ vision-capability → prd-requirement → architecture-component → phase → s
 1. Draft before you ask. 2. Personalization-only gates. 3. State the default. 4. Lock to advance. 5. Rubric-derived cuts. 6. Segment = batch. 7. Trace everything. 8. Persist state in the ledgers, not chat.
 
 ## Provenance
-Produced against the Xyric `WORKFLOW/blueprint` standard (see `xyric-frameworks-main/WORKFLOW/blueprint`). Supersedes the older Epic/Story/Task docs in `xyric-wiki/PRODUCTS/taqiai/`. Reference corpora: app data on Railway Postgres (Prisma); judgments/statutes as read-only SQLite.
+Produced against the Xyric `WORKFLOW/blueprint` standard (see `xyric-frameworks-main/WORKFLOW/blueprint`). Supersedes the older Epic/Story/Task docs in `xyric-wiki/PRODUCTS/taqiai/`. Data: app data AND reference corpora (277K+ judgments, 64K+ statute sections) on Railway Postgres via Prisma with GIN FTS; read-only SQLite is the local-dev path via a `usePostgres()` runtime switch.
