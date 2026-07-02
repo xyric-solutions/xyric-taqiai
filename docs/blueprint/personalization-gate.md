@@ -44,7 +44,7 @@
 | # | Decision | AI default + reason | Alternatives | User answer |
 |---|----------|---------------------|--------------|-------------|
 | 1 | Segment granularity | **Module-granular (23 segments), one file each** (reason: context-fit 5 forces finer segments; large live codebase) | Consolidated segment plan only | **User chose: full Segment Plan + one file per segment** |
-| 2 | Save location | **`ai-legal-system/blueprint/`** (the xyric-solutions/xyric-taqiai repo) | wiki `PRODUCTS/taqiai/blueprint`; project-root `/blueprint` | **User chose: xyric-solutions xyric-taqiai (app repo)** |
+| 2 | Save location | **`ai-legal-system/docs/blueprint/`** (the xyric-solutions/xyric-taqiai repo) | wiki `PRODUCTS/taqiai/blueprint`; project-root `/blueprint` | **User chose: xyric-solutions xyric-taqiai (app repo)** |
 | 3 | First proving-ground build | **S1.2 Template Drafting Engine** (reason: highest-value, exercises drafting+LLM+vault spine) | S2.5 Advisor | default |
 
 ## Gate hygiene check (run at every stage)

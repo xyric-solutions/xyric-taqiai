@@ -1,5 +1,5 @@
 <!-- BUILD_READY: TaqiAI -->
-Segment Plan: ai-legal-system/blueprint/segments/
+Segment Plan: ai-legal-system/docs/blueprint/segments/
 Segments → batches (1:1): S1.1, S1.2, S1.3, S1.4, S1.5, S2.1, S2.2, S2.3, S2.4, S2.5, S2.6, S3.1, S3.2, S3.3, S3.4, S4.1, S4.2, S4.3, S4.4, S5.1, S5.2, S5.3, S5.4
 (Phases 1–4 = shipped/retrospective; active build queue for Forgeflow = S5.1 → S5.4.)
 
@@ -7,7 +7,7 @@ Segments → batches (1:1): S1.1, S1.2, S1.3, S1.4, S1.5, S2.1, S2.2, S2.3, S2.4
 
 - Last updated: 2026-07-02
 - Current stage: Handoff
-- Docs root: `ai-legal-system/blueprint/`
+- Docs root: `ai-legal-system/docs/blueprint/`
 - Handoff status: BUILD_READY (documentation set complete; product already live — segments are retrospective build-shape records + Phase 5 forward work)
 
 ## Do Not Assume

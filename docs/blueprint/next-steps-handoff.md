@@ -17,7 +17,7 @@
 cd "d:/AI legal System/ai-legal-system"
 git log --oneline -3
 # review Phase 5 segments
-ls blueprint/segments/S5.*.md
+ls docs/blueprint/segments/S5.*.md
 ```
 Expected state:
 - Last locked stage: Segments (all 5 stages locked)
@@ -33,7 +33,7 @@ Expected state:
 ## Completed Last Session
 | Stage / artifact | What changed | Evidence |
 |------------------|--------------|----------|
-| Full Blueprint set | Drafted + locked Vision, PRD, Architecture, Rubric, Phase Plan, Traceability, Gate, both ledgers, 23 segment files | `ai-legal-system/blueprint/` |
+| Full Blueprint set | Drafted + locked Vision, PRD, Architecture, Rubric, Phase Plan, Traceability, Gate, both ledgers, 23 segment files | `ai-legal-system/docs/blueprint/` |
 
 ## Open Blockers
 | ID | Severity | Blocked work | Next action | Closure condition |
