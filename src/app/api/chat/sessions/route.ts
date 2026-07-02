@@ -9,7 +9,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const sessions = await prisma.chatSession.findMany({
+  const rows = await prisma.chatSession.findMany({
     where: { userId: session.userId },
     orderBy: { updatedAt: "desc" },
     select: {
@@ -18,8 +18,21 @@ export async function GET() {
       createdAt: true,
       updatedAt: true,
       _count: { select: { messages: true } },
+      // First user message — used as a fallback label for older chats that
+      // were created before auto-titling existed (title is null).
+      messages: {
+        where: { role: "user" },
+        orderBy: { createdAt: "asc" },
+        take: 1,
+        select: { content: true },
+      },
     },
   });
+
+  const sessions = rows.map(({ messages, ...s }) => ({
+    ...s,
+    preview: messages[0]?.content?.slice(0, 80) ?? null,
+  }));
 
   return NextResponse.json({ sessions });
 }

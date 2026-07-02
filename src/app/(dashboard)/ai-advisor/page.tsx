@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
-import { Send, Scale, Trash2, ExternalLink, Sparkles, BookOpen, ChevronRight, Mic, MicOff, ImagePlus, X, ThumbsUp, ThumbsDown, Pencil, BookmarkPlus, AlertTriangle, Check } from "lucide-react";
+import { Send, Scale, Trash2, ExternalLink, Sparkles, BookOpen, ChevronRight, Mic, MicOff, ImagePlus, X, ThumbsUp, ThumbsDown, Pencil, BookmarkPlus, AlertTriangle, Check, Plus, History } from "lucide-react";
 import { detectIntent, detectAllIntents, getIntentMeta, getIntentSystemPrompt } from "@/lib/intent-detection";
 import Link from "next/link";
 
@@ -36,7 +36,16 @@ interface ApiChatSession {
   id: string;
   title: string | null;
   updatedAt: string;
+  messageCount?: number;
+  _count?: { messages: number };
+  // First-message snippet, used as a label when title is null (older chats).
+  preview?: string | null;
 }
+
+// After this many messages in one chat we gently nudge the user to start a
+// fresh chat — long chats drift off-topic and dilute the grounded context,
+// which is the real driver of hallucination (not the per-turn history window).
+const SOFT_MESSAGE_LIMIT = 30;
 
 interface ApiChatMessage {
   id: string;
@@ -52,6 +61,15 @@ export default function AIAdvisorPage() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [uploadedImageName, setUploadedImageName] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<ApiChatSession[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [sessionLoading, setSessionLoading] = useState(false);
+  // Cache loaded chats in memory so re-opening one is instant (the Railway
+  // Postgres proxy is slow), plus a guard against out-of-order open clicks.
+  const sessionCache = useRef<Map<string, Message[]>>(new Map());
+  const openReqRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -73,43 +91,103 @@ export default function AIAdvisorPage() {
     }
   }, [messages, loading]);
 
+  // Fetch the user's chat list for the history sidebar.
+  const loadSessions = async (): Promise<ApiChatSession[]> => {
+    try {
+      const res = await fetch("/api/chat/sessions", { credentials: "include" });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { sessions: ApiChatSession[] };
+      const mapped = data.sessions.map((s) => ({
+        ...s,
+        messageCount: s._count?.messages ?? s.messageCount ?? 0,
+      }));
+      setSessions(mapped);
+      return mapped;
+    } catch {
+      return [];
+    }
+  };
+
+  // Load a saved chat's messages into the view.
+  const openSession = async (id: string) => {
+    // On narrow screens the list overlays the chat, so close it after picking.
+    if (typeof window !== "undefined" && window.innerWidth < 1024) setHistoryOpen(false);
+    if (id === sessionId) return;
+    setSessionId(id);
+    openReqRef.current = id;
+
+    // Instant if we've already loaded this chat this session.
+    const cached = sessionCache.current.get(id);
+    if (cached) {
+      setMessages(cached);
+      setSessionLoading(false);
+      return;
+    }
+
+    // Otherwise clear + show a loader so the click feels responsive while the
+    // (slow) DB fetch runs.
+    setMessages([]);
+    setSessionLoading(true);
+    try {
+      const sRes = await fetch(`/api/chat/sessions/${id}`, { credentials: "include" });
+      if (sRes.ok) {
+        const sData = (await sRes.json()) as { session: { messages: ApiChatMessage[] } };
+        const msgs: Message[] = sData.session.messages.map((m) => ({
+          role: m.role === "user" ? "user" : "assistant",
+          content: m.content,
+        }));
+        sessionCache.current.set(id, msgs);
+        // Ignore if a newer click has superseded this one.
+        if (openReqRef.current === id) setMessages(msgs);
+      }
+    } catch {
+      // silent — leave the view empty on failure
+    } finally {
+      if (openReqRef.current === id) setSessionLoading(false);
+    }
+  };
+
+  // Create a fresh empty session and make it active.
+  const createSession = async (): Promise<string | null> => {
+    try {
+      const res = await fetch("/api/chat/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({}),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { session: ApiChatSession };
+        setSessionId(data.session.id);
+        await loadSessions();
+        return data.session.id;
+      }
+    } catch {
+      // silent — chat works without persistence as a fallback
+    }
+    return null;
+  };
+
   // Load most recent session or create a new one
   useEffect(() => {
+    // Show the history panel by default on desktop, collapsed on mobile.
+    if (typeof window !== "undefined") setHistoryOpen(window.innerWidth >= 1024);
     (async () => {
-      try {
-        const res = await fetch("/api/chat/sessions", { credentials: "include" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { sessions: ApiChatSession[] };
-        if (data.sessions.length > 0) {
-          const latest = data.sessions[0];
-          setSessionId(latest.id);
-          const sRes = await fetch(`/api/chat/sessions/${latest.id}`, { credentials: "include" });
-          if (sRes.ok) {
-            const sData = (await sRes.json()) as { session: { messages: ApiChatMessage[] } };
-            setMessages(
-              sData.session.messages.map((m) => ({
-                role: m.role === "user" ? "user" : "assistant",
-                content: m.content,
-              }))
-            );
-          }
-        } else {
-          const newRes = await fetch("/api/chat/sessions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({}),
-          });
-          if (newRes.ok) {
-            const newData = (await newRes.json()) as { session: ApiChatSession };
-            setSessionId(newData.session.id);
-          }
-        }
-      } catch {
-        // silent — chat works without persistence as a fallback
+      const list = await loadSessions();
+      if (list.length > 0) {
+        await openSession(list[0].id);
+      } else {
+        await createSession();
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep the active chat's cached copy in sync (e.g. after sending a message),
+  // so switching away and back stays instant and never shows stale content.
+  useEffect(() => {
+    if (sessionId && !sessionLoading) sessionCache.current.set(sessionId, messages);
+  }, [messages, sessionId, sessionLoading]);
 
   const persistMessage = async (role: "user" | "assistant", content: string) => {
     if (!sessionId) return;
@@ -127,19 +205,44 @@ export default function AIAdvisorPage() {
 
   const handleNewSession = async () => {
     setMessages([]);
+    await createSession();
+  };
+
+  // Rename a chat from the history sidebar.
+  const handleRenameSession = async (id: string) => {
+    const title = renameValue.trim();
+    setRenamingId(null);
+    setRenameValue("");
+    if (!title) return;
     try {
-      const res = await fetch("/api/chat/sessions", {
-        method: "POST",
+      await fetch(`/api/chat/sessions/${id}`, {
+        method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ title }),
       });
-      if (res.ok) {
-        const data = (await res.json()) as { session: ApiChatSession };
-        setSessionId(data.session.id);
-      }
     } catch {
       // ignore
+    }
+    await loadSessions();
+  };
+
+  // Delete a chat; if it was the open one, fall back to the next chat (or a new one).
+  const handleDeleteSession = async (id: string) => {
+    if (!window.confirm("Delete this chat? This cannot be undone.")) return;
+    try {
+      await fetch(`/api/chat/sessions/${id}`, { method: "DELETE", credentials: "include" });
+    } catch {
+      // ignore
+    }
+    const remaining = await loadSessions();
+    if (id === sessionId) {
+      if (remaining.length > 0) {
+        await openSession(remaining[0].id);
+      } else {
+        setMessages([]);
+        await createSession();
+      }
     }
   };
 
@@ -240,6 +343,7 @@ export default function AIAdvisorPage() {
   const handleSend = async () => {
     if ((!input.trim() && !uploadedImage) || loading) return;
 
+    const isFirstMessage = messages.length === 0;
     const userMessage: Message = {
       role: "user",
       content: input.trim() || (uploadedImage ? "Analyze this legal document" : ""),
@@ -247,6 +351,17 @@ export default function AIAdvisorPage() {
     };
     setMessages((prev) => [...prev, userMessage]);
     void persistMessage("user", userMessage.content);
+
+    // Auto-title a brand-new chat with an AI-generated, ChatGPT-style name
+    // from its first question so the history list reads meaningfully.
+    if (isFirstMessage && sessionId && userMessage.content) {
+      void fetch(`/api/chat/sessions/${sessionId}/title`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ message: userMessage.content }),
+      }).then(() => loadSessions());
+    }
     const currentInput = input;
     const currentImage = uploadedImage;
     setInput("");
@@ -327,6 +442,7 @@ export default function AIAdvisorPage() {
       const finalText = full || streamError || "Sorry, I encountered an error. Please try again.";
       updateLast({ content: finalText, isUncertain: isUncertainResponse(finalText) });
       void persistMessage("assistant", finalText);
+      void loadSessions();
     } catch {
       const errorMsg = "Sorry, I encountered an error. Please try again.";
       setMessages((prev) => [...prev, { role: "assistant", content: errorMsg }]);
@@ -420,8 +536,104 @@ export default function AIAdvisorPage() {
     sky: { bg: "bg-sky-500", text: "text-sky-300", border: "border-sky-500/25", light: "bg-sky-500/10" },
   };
 
+  // Only list chats that actually have messages — keeps the history clean
+  // (no empty "New chat" placeholders piling up like the current mess).
+  const visibleSessions = sessions.filter((s) => (s.messageCount ?? 0) > 0);
+
   return (
-    <div className="h-full flex flex-col gap-4">
+    <div className="h-full flex gap-4">
+      {/* ===== CHAT HISTORY — full-height side panel (ChatGPT-style) ===== */}
+      {historyOpen && (
+        <>
+          {/* Mobile backdrop — tap to dismiss */}
+          <div onClick={() => setHistoryOpen(false)} className="fixed inset-0 z-30 bg-black/50 lg:hidden" />
+
+          <aside
+            className="fixed inset-y-0 left-0 z-40 w-72 flex flex-col min-h-0 lg:static lg:z-auto lg:inset-auto lg:w-[256px] lg:flex-shrink-0 lg:self-start lg:max-h-full overflow-hidden rounded-none lg:rounded-2xl border-r lg:border"
+            style={{ background: "var(--bg-surface-1)", borderColor: "var(--border-subtle)" }}
+          >
+            {/* New chat */}
+            <div className="p-2.5">
+              <button
+                onClick={handleNewSession}
+                className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-[13px] font-semibold border transition-colors hover:border-primary-500/40 hover:bg-[var(--bg-surface-2)]"
+                style={{ color: "var(--text-secondary)", borderColor: "var(--border-default)" }}
+              >
+                <Plus className="h-4 w-4" /> New chat
+              </button>
+            </div>
+
+            {/* Recents heading */}
+            <div className="px-4 pt-1 pb-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-tertiary)" }}>
+                Recents
+              </span>
+            </div>
+
+            {/* Chat list */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-1.5 pb-3 space-y-0.5">
+              {visibleSessions.length === 0 ? (
+                <p className="text-xs text-center py-6" style={{ color: "var(--text-tertiary)" }}>
+                  No chats yet
+                </p>
+              ) : (
+                visibleSessions.map((s) => {
+                  const active = s.id === sessionId;
+                  return (
+                    <div
+                      key={s.id}
+                      onClick={() => renamingId !== s.id && openSession(s.id)}
+                      className="group flex items-center gap-1 pl-3 pr-1 py-2 rounded-lg cursor-pointer transition-colors hover:bg-[var(--bg-surface-2)]"
+                      style={active ? { background: "var(--bg-surface-2)" } : undefined}
+                    >
+                      {renamingId === s.id ? (
+                        <input
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleRenameSession(s.id);
+                            if (e.key === "Escape") { setRenamingId(null); setRenameValue(""); }
+                          }}
+                          onBlur={() => handleRenameSession(s.id)}
+                          autoFocus
+                          className="flex-1 min-w-0 px-1.5 py-0.5 text-[13px] rounded border focus:outline-none focus:ring-1 focus:ring-primary-500/40"
+                          style={{ background: "var(--bg-surface-1)", color: "var(--text-primary)", borderColor: "var(--border-default)" }}
+                        />
+                      ) : (
+                        <>
+                          <span className="flex-1 min-w-0 truncate text-[13px]" style={{ color: active ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                            {s.title || s.preview || "New chat"}
+                          </span>
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setRenamingId(s.id); setRenameValue(s.title || s.preview || ""); }}
+                              className="p-1 rounded hover:bg-[var(--bg-surface-3)]"
+                              title="Rename"
+                            >
+                              <Pencil className="h-3 w-3" style={{ color: "var(--text-tertiary)" }} />
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                              className="p-1 rounded hover:bg-danger-500/10"
+                              title="Delete"
+                            >
+                              <Trash2 className="h-3 w-3 text-danger-500" />
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </aside>
+        </>
+      )}
+
+      {/* ===== RIGHT SIDE: header + chat ===== */}
+      <div className="flex-1 flex flex-col gap-4 min-w-0">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-display text-xl sm:text-2xl font-extrabold flex items-center gap-2.5" style={{ color: "var(--text-primary)" }}>
@@ -432,11 +644,14 @@ export default function AIAdvisorPage() {
           </h1>
           <p className="text-sm mt-1" style={{ color: "var(--text-tertiary)" }}>Ask about Pakistani law — PPC, CrPC, CPC, Family Laws &amp; more</p>
         </div>
-        {messages.length > 0 && (
-          <Button variant="ghost" size="sm" onClick={handleNewSession}>
-            <Trash2 className="h-4 w-4" /> New Chat
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setHistoryOpen((v) => !v)}>
+            <History className="h-4 w-4" /> History
           </Button>
-        )}
+          <Button variant="ghost" size="sm" onClick={handleNewSession}>
+            <Plus className="h-4 w-4" /> New Chat
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 flex flex-col lg:flex-row gap-4 min-h-0 overflow-hidden">
@@ -444,7 +659,15 @@ export default function AIAdvisorPage() {
         <Card className="flex-1 flex flex-col overflow-hidden min-h-[300px] sm:min-h-[400px]">
           {/* Messages */}
           <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-            {messages.length === 0 ? (
+            {sessionLoading ? (
+              <div className="h-full flex items-center justify-center py-12">
+                <div className="flex gap-1.5">
+                  <div className="w-2 h-2 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <div className="w-2 h-2 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <div className="w-2 h-2 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                </div>
+              </div>
+            ) : messages.length === 0 ? (
               <div className="text-center py-8 sm:py-12">
                 <div className="relative w-16 h-16 mx-auto mb-4 grid place-items-center">
                   <span className="absolute inset-0 rounded-2xl bg-primary-500/10 blur-xl" />
@@ -483,7 +706,7 @@ export default function AIAdvisorPage() {
                 <div key={i} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                   {/* S04-05: Uncertainty banner */}
                   {msg.role === "assistant" && msg.isUncertain && (
-                    <div className="max-w-[85%] sm:max-w-[75%] mb-1 flex items-center gap-1.5 px-2.5 py-1 bg-warning-500/10 border border-warning-500/25 rounded-lg">
+                    <div className="max-w-[92%] mb-1 flex items-center gap-1.5 px-2.5 py-1 bg-warning-500/10 border border-warning-500/25 rounded-lg">
                       <AlertTriangle className="h-3 w-3 text-warning-500 flex-shrink-0" />
                       <p className="text-[10px] text-warning-500 font-medium">Uncertain response — please verify with a qualified lawyer</p>
                     </div>
@@ -491,7 +714,7 @@ export default function AIAdvisorPage() {
 
                   {/* Message bubble or edit form */}
                   {editingIndex === i ? (
-                    <div className="max-w-[85%] sm:max-w-[75%] w-full space-y-2">
+                    <div className="max-w-[92%] w-full space-y-2">
                       <textarea
                         value={editValue}
                         onChange={(e) => setEditValue(e.target.value)}
@@ -518,7 +741,7 @@ export default function AIAdvisorPage() {
                     </div>
                   ) : (
                     <div
-                      className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-3 border ${
+                      className={`max-w-[92%] rounded-2xl px-4 py-3 border ${
                         msg.role === "user"
                           ? "bg-gradient-to-br from-primary-500 to-primary-600 rounded-br-md border-primary-400/30"
                           : `rounded-bl-md ${msg.approval === "rejected" ? "opacity-50" : ""}`
@@ -541,7 +764,7 @@ export default function AIAdvisorPage() {
 
                   {/* Verified judgments from the corpus that grounded this answer */}
                   {msg.role === "assistant" && editingIndex !== i && msg.sources && msg.sources.length > 0 && (
-                    <div className="max-w-[85%] sm:max-w-[75%] mt-1.5 p-2.5 rounded-xl" style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)" }}>
+                    <div className="max-w-[92%] mt-1.5 p-2.5 rounded-xl" style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)" }}>
                       <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1" style={{ color: "var(--text-tertiary)" }}>
                         <BookOpen className="h-3 w-3 text-success-500" /> Verified from your archive
                       </p>
@@ -567,7 +790,7 @@ export default function AIAdvisorPage() {
 
                   {/* S04-08: Mandatory disclaimer on every AI response */}
                   {msg.role === "assistant" && editingIndex !== i && (
-                    <div className="max-w-[85%] sm:max-w-[75%] mt-1 flex items-start gap-1.5 px-2 py-1.5 bg-warning-500/10 border border-warning-500/25 rounded-xl">
+                    <div className="max-w-[92%] mt-1 flex items-start gap-1.5 px-2 py-1.5 bg-warning-500/10 border border-warning-500/25 rounded-xl">
                       <span className="text-warning-500 text-[10px] mt-0.5 flex-shrink-0">⚠</span>
                       <p className="text-[10px] leading-tight" style={{ color: "var(--text-secondary)" }}>
                         <span className="font-semibold text-warning-500">AI Disclaimer:</span> This AI response is general legal information only — not formal legal advice. Please consult a registered lawyer for your specific case. / یہ عمومی قانونی معلومات ہیں، باقاعدہ قانونی مشورہ نہیں۔
@@ -577,7 +800,7 @@ export default function AIAdvisorPage() {
 
                   {/* S04-03: Approve / Edit / Reject buttons */}
                   {msg.role === "assistant" && editingIndex !== i && msg.approval === "pending" && (
-                    <div className="max-w-[85%] sm:max-w-[75%] mt-1.5 flex items-center gap-1.5">
+                    <div className="max-w-[92%] mt-1.5 flex items-center gap-1.5">
                       <button
                         onClick={() => handleApprove(i)}
                         className="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-lg bg-success-500/10 text-success-500 border border-success-500/25 hover:bg-success-500/20 font-medium transition-colors"
@@ -601,7 +824,7 @@ export default function AIAdvisorPage() {
 
                   {/* S04-03: Approved status + S04-07: Save as Note */}
                   {msg.role === "assistant" && editingIndex !== i && (msg.approval === "approved" || msg.approval === "edited") && (
-                    <div className="max-w-[85%] sm:max-w-[75%] mt-1.5 flex items-center gap-2">
+                    <div className="max-w-[92%] mt-1.5 flex items-center gap-2">
                       <span className="flex items-center gap-1 text-[10px] text-success-500 font-medium">
                         <Check className="h-3 w-3" /> Approved
                       </span>
@@ -623,7 +846,7 @@ export default function AIAdvisorPage() {
 
                   {/* S04-03: Rejected status */}
                   {msg.role === "assistant" && editingIndex !== i && msg.approval === "rejected" && (
-                    <div className="max-w-[85%] sm:max-w-[75%] mt-1">
+                    <div className="max-w-[92%] mt-1">
                       <span className="flex items-center gap-1 text-[10px] text-danger-500 font-medium">
                         <ThumbsDown className="h-3 w-3" /> Rejected
                       </span>
@@ -648,6 +871,22 @@ export default function AIAdvisorPage() {
 
           {/* Input */}
           <div className="p-3 sm:p-4 flex-shrink-0" style={{ borderTop: "1px solid var(--border-subtle)" }}>
+            {/* Soft message-limit nudge — long chats drift, so suggest a fresh one */}
+            {messages.length >= SOFT_MESSAGE_LIMIT && (
+              <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl bg-warning-500/10 border border-warning-500/25">
+                <AlertTriangle className="h-3.5 w-3.5 text-warning-500 flex-shrink-0" />
+                <p className="text-[11px] leading-tight flex-1" style={{ color: "var(--text-secondary)" }}>
+                  This chat is getting long. For sharper, more accurate answers, start a new chat.
+                </p>
+                <button
+                  onClick={handleNewSession}
+                  className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-lg bg-primary-500/10 text-primary-300 border border-primary-500/25 hover:bg-primary-500/20 font-medium transition-colors"
+                >
+                  <Plus className="h-3 w-3" /> New Chat
+                </button>
+              </div>
+            )}
+
             {/* Image Preview */}
             {uploadedImage && (
               <div className="mb-2 flex items-center gap-2 p-2 rounded-lg border" style={{ background: "var(--bg-surface-2)", borderColor: "var(--border-subtle)" }}>
@@ -826,6 +1065,7 @@ export default function AIAdvisorPage() {
             </Card>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
