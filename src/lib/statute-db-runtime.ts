@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import fs from "fs";
+import path from "path";
 import { prisma } from "@/lib/prisma";
 import {
   searchStatuteSections as searchStatuteSectionsSqlite,
@@ -10,8 +12,28 @@ import {
 
 export type { AmendmentDoc, StatuteHit };
 
+const SQLITE_STATUTES = path.join(process.cwd(), "data", "statutes.db");
+let _localStatutes: boolean | null = null;
+function localStatutesAvailable(): boolean {
+  if (_localStatutes === null) {
+    try {
+      _localStatutes = fs.existsSync(SQLITE_STATUTES);
+    } catch {
+      _localStatutes = false;
+    }
+  }
+  return _localStatutes;
+}
+
 function usePostgres(): boolean {
-  return /^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL || "");
+  const isPg = /^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL || "");
+  if (!isPg) return false;
+  // Local dev: prefer the local SQLite statutes corpus over the flaky Railway
+  // public proxy (which adds seconds/timeouts to every Advisor turn). Production
+  // (NODE_ENV=production, no local .db) always uses Postgres. Mirrors the same
+  // guard in judgment-db-runtime.
+  if (process.env.NODE_ENV === "production") return true;
+  return !localStatutesAvailable();
 }
 
 function toWebsearchExpr(terms: string[]): string {

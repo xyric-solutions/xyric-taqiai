@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import fs from "fs";
+import path from "path";
 import { prisma } from "@/lib/prisma";
 import {
   countLocalJudgments as countLocalJudgmentsSqlite,
@@ -19,8 +21,31 @@ import {
 
 export type { JudgmentRow, JudgmentSearchResult, SortMode };
 
+const SQLITE_JUDGMENTS = path.join(process.cwd(), "data", "judgments.db");
+let _localSqlite: boolean | null = null;
+function localSqliteAvailable(): boolean {
+  if (_localSqlite === null) {
+    try {
+      _localSqlite = fs.existsSync(SQLITE_JUDGMENTS);
+    } catch {
+      _localSqlite = false;
+    }
+  }
+  return _localSqlite;
+}
+
 function usePostgres(): boolean {
-  return /^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL || "");
+  const isPg = /^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL || "");
+  if (!isPg) return false;
+  // Local dev connects to the LIVE Railway Postgres over a flaky PUBLIC PROXY
+  // that drops connections and makes judgments fail to load ("connection was
+  // slow"). When the local SQLite corpus is present (278k judgments w/ FTS5,
+  // ~15ms searches — and it is NOT deployed to Railway), read judgments from it
+  // instead: fast, reliable, no proxy, and it keeps the Advisor's cited judgments
+  // consistent with what the reader opens. Production (Railway) runs with
+  // NODE_ENV=production and no local .db file, so it always uses Postgres.
+  if (process.env.NODE_ENV === "production") return true;
+  return !localSqliteAvailable();
 }
 
 function cleanSearchTerm(value: string): string {
@@ -229,12 +254,19 @@ async function searchPg(
     const expr = related ? anyExpr(queryTerms(query)) : phraseExpr(query);
     if (!expr) return [];
 
+    // Inline the tsquery instead of a `WITH q … CROSS JOIN q` CTE. The CTE form
+    // hides the tsquery from the planner, which then can't use the GIN index
+    // (legal_judgments_search_idx) and falls back to a full seq scan of ~278k
+    // rows — minutes over the slow proxy. Inlined, it uses a Bitmap Index Scan
+    // (~10ms). $1 is the tsquery string and can be referenced multiple times.
+    const tsq = "websearch_to_tsquery('simple', $1)";
+
     const params: any[] = [expr];
     const where = ["j.processed = 1"];
     addFilters(where, params, { court, year, reportedOnly });
 
     const citationLike = `%${query.trim()}%`;
-    let matchSql = `${textVectorSql("j")} @@ q.query`;
+    let matchSql = `${textVectorSql("j")} @@ ${tsq}`;
     if (!related && looksLikeCitation(query)) {
       params.push(citationLike);
       matchSql = `(${matchSql} OR j.citation ILIKE $${params.length} OR j.real_citation ILIKE $${params.length})`;
@@ -244,14 +276,11 @@ async function searchPg(
 
     const rows = await prisma.$queryRawUnsafe<any[]>(
       `
-        WITH q AS (SELECT websearch_to_tsquery('simple', $1) AS query)
         SELECT j.id, j.citation, j.real_citation, j.court, j.year, j.title, j.processed,
                substr(j.content, 1, 4000) AS content,
-               ts_rank_cd(${textVectorSql("j")}, q.query) AS rank
+               ts_rank_cd(${textVectorSql("j")}, ${tsq}) AS rank
         FROM legal_judgments j
-        CROSS JOIN q
-        WHERE numnode(q.query) > 0
-          AND ${where.join(" AND ")}
+        WHERE ${where.join(" AND ")}
         ORDER BY ${orderBy(sort, "j", "rank")}
         LIMIT $${params.length}
       `,
@@ -310,21 +339,20 @@ export async function searchSectionJudgments(
       const expr = anyExpr(variants.slice(0, 4));
       if (!expr) return [];
 
+      // Inline the tsquery so the GIN index is used (see searchPg for details).
+      const tsq = "websearch_to_tsquery('simple', $1)";
       const params: any[] = [expr];
-      const where = ["j.processed = 1", `${textVectorSql("j")} @@ q.query`];
+      const where = ["j.processed = 1", `${textVectorSql("j")} @@ ${tsq}`];
       addFilters(where, params, { court, year, reportedOnly });
       params.push(Math.min(300, Math.max(limit + offset + 20, (offset + limit) * 2)));
 
       const rows = await prisma.$queryRawUnsafe<any[]>(
         `
-          WITH q AS (SELECT websearch_to_tsquery('simple', $1) AS query)
           SELECT j.id, j.citation, j.real_citation, j.court, j.year, j.title, j.processed,
                  substr(j.content, 1, 4000) AS content,
-                 ts_rank_cd(${textVectorSql("j")}, q.query) AS rank
+                 ts_rank_cd(${textVectorSql("j")}, ${tsq}) AS rank
           FROM legal_judgments j
-          CROSS JOIN q
-          WHERE numnode(q.query) > 0
-            AND ${where.join(" AND ")}
+          WHERE ${where.join(" AND ")}
           ORDER BY rank DESC, j.year DESC, ${courtPrioritySql("j")} ASC, j.id ASC
           LIMIT $${params.length}
         `,
@@ -349,18 +377,17 @@ async function countPg(
     const expr = related ? anyExpr(queryTerms(query)) : phraseExpr(query);
     if (!expr) return 0;
 
+    // Inline the tsquery so the GIN index is used (see searchPg for details).
+    const tsq = "websearch_to_tsquery('simple', $1)";
     const params: any[] = [expr];
-    const where = ["j.processed = 1", `${textVectorSql("j")} @@ q.query`];
+    const where = ["j.processed = 1", `${textVectorSql("j")} @@ ${tsq}`];
     addFilters(where, params, { court, year, reportedOnly });
 
     const rows = await prisma.$queryRawUnsafe<{ count: bigint }[]>(
       `
-        WITH q AS (SELECT websearch_to_tsquery('simple', $1) AS query)
         SELECT COUNT(*)::bigint AS count
         FROM legal_judgments j
-        CROSS JOIN q
-        WHERE numnode(q.query) > 0
-          AND ${where.join(" AND ")}
+        WHERE ${where.join(" AND ")}
       `,
       ...params
     );
@@ -416,15 +443,25 @@ export async function getJudgmentDbStats(): Promise<{ total: number; processed: 
 
 export async function getLocalJudgmentById(id: number): Promise<JudgmentRow | null> {
   if (usePostgres()) {
-    try {
-      const rows = await prisma.$queryRawUnsafe<JudgmentRow[]>(
-        "SELECT * FROM legal_judgments WHERE id = $1 LIMIT 1",
-        id
-      );
-      return rows[0] || null;
-    } catch {
-      return null;
+    // Retry a few times: the public proxy used in local dev drops connections
+    // intermittently, and a single failure here otherwise surfaces as a bogus
+    // "Full text not yet extracted" even though the judgment HAS content.
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const rows = await prisma.$queryRawUnsafe<JudgmentRow[]>(
+          "SELECT * FROM legal_judgments WHERE id = $1 LIMIT 1",
+          id
+        );
+        return rows[0] || null;
+      } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 500));
+      }
     }
+    // All attempts failed — signal a transient error (not "no such judgment")
+    // so the caller can tell it apart from a genuine miss.
+    throw lastErr instanceof Error ? lastErr : new Error("judgment lookup failed");
   }
   return getLocalJudgmentByIdSqlite(id);
 }

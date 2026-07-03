@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import {
   X, Bookmark, Copy, Check, Sparkles, Scale, Building2,
   ScrollText, Quote, BookText, Loader2, BadgeCheck, Network, Download,
+  AlertTriangle, RefreshCw,
 } from "lucide-react";
 import {
   isJudgmentSaved, toggleSavedJudgment, onSavedJudgmentsChange,
@@ -44,6 +45,10 @@ export default function JudgmentReader({ judgment, onClose, onSearchCitation }: 
   const [content, setContent] = useState<string | null>(null);
   const [citedBy, setCitedBy] = useState(0);
   const [loading, setLoading] = useState(true);
+  // True only when the fetch itself failed (slow/flaky proxy) — distinct from a
+  // judgment that genuinely has no extracted text, so we show Retry not a dead end.
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -74,17 +79,35 @@ export default function JudgmentReader({ judgment, onClose, onSearchCitation }: 
   }, [onClose]);
 
   // ── fetch full text ──
+  // Retries transient failures: the local-dev proxy drops connections, and a
+  // single miss used to render "Full text not yet extracted" for judgments that
+  // actually have content. A 5xx / network error is retried; a clean 200 with no
+  // content is treated as a genuine "no text" (not an error).
   useEffect(() => {
     let alive = true;
-    setLoading(true); setContent(null); setCitedBy(0);
+    setLoading(true); setContent(null); setCitedBy(0); setLoadError(false);
     setHeadnote(null); setHnError("");
-    fetch(`/api/judgments/local/${judgment.id}`)
-      .then((r) => r.json())
-      .then((d) => { if (alive) { setContent(d.judgment?.content || null); setCitedBy(d.citedBy || 0); } })
-      .catch(() => { if (alive) setContent(null); })
-      .finally(() => { if (alive) setLoading(false); });
+    (async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const r = await fetch(`/api/judgments/local/${judgment.id}`);
+          if (r.status >= 500) throw new Error("transient");
+          const d = await r.json().catch(() => ({} as { judgment?: { content?: string }; citedBy?: number }));
+          if (!alive) return;
+          setContent(d.judgment?.content || null);
+          setCitedBy(d.citedBy || 0);
+          setLoading(false);
+          return;
+        } catch {
+          if (!alive) return;
+          if (attempt < 2) { await new Promise((res) => setTimeout(res, 700)); continue; }
+          setLoadError(true);
+          setLoading(false);
+        }
+      }
+    })();
     return () => { alive = false; };
-  }, [judgment.id]);
+  }, [judgment.id, reloadKey]);
 
   // ── derived structure ──
   const parties = useMemo(() => parseParties(judgment.title, content), [judgment.title, content]);
@@ -268,6 +291,17 @@ export default function JudgmentReader({ judgment, onClose, onSearchCitation }: 
                   {paragraphs.map((p, i) => (
                     <p key={i} className="text-[15px] leading-[1.85] text-justify" style={{ color: "var(--text-secondary)" }}>{p}</p>
                   ))}
+                </div>
+              ) : loadError ? (
+                <div className="py-16 text-center flex flex-col items-center gap-3" style={{ fontFamily: "var(--font-sans)" }}>
+                  <AlertTriangle className="h-9 w-9" style={{ color: "var(--warning-500, #f59e0b)" }} />
+                  <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Couldn&apos;t load the judgment text — the connection was slow.</p>
+                  <button
+                    onClick={() => setReloadKey((k) => k + 1)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-lg bg-primary-500/10 text-primary-300 border border-primary-500/25 hover:bg-primary-500/20 transition-colors"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" /> Retry
+                  </button>
                 </div>
               ) : (
                 <div className="py-16 text-center" style={{ fontFamily: "var(--font-sans)" }}>

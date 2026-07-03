@@ -22,20 +22,20 @@ export async function POST(request: NextRequest) {
     const base64 = Buffer.from(bytes).toString("base64");
     const mimeType = audio.type || "audio/webm";
 
-    const prompt = `You are a professional transcriber. This is a voice recording of a legal discussion in Pakistan — usually a lawyer and a client talking about the client's legal matter (there may be one or more speakers).
+    const prompt = `You are a professional transcriber. This is a voice recording of a legal discussion in Pakistan — usually a lawyer and a client talking about the client's legal matter (there may be one or more speakers). The speakers may use English, Urdu, Roman Urdu, or a mix.
 
-TRANSCRIBE the audio completely from start to end. The speakers may use:
-- English
-- Urdu
-- Roman Urdu (English letters, Urdu words)
-- Mixed (Urdu + English)
+TRANSCRIBE the audio completely from start to end.
 
 If you can clearly tell that different people are speaking, you may start a new line for each turn — but do NOT guess or invent speaker names.
 
-OUTPUT FORMAT:
-Return ONLY the transcribed text in the original language spoken. If Urdu Roman, keep it Roman. If Urdu script, keep Urdu script. If English, keep English. Mixed is fine.
+SCRIPT RULE (VERY IMPORTANT — always follow):
+- Write EVERY SINGLE WORD using the English (Latin / a-z) alphabet only.
+- ABSOLUTELY NO non-Latin scripts — no Urdu/Arabic script (دائر), no Hindi/Devanagari script (दायर), no other alphabet. Not even for a single word.
+- Any Urdu speech MUST be written as ROMAN URDU — Urdu words spelled with English letters (e.g. "dayar", "qabza", "adalat"), NOT in Urdu or Hindi script.
+- English words stay in English. For mixed speech, keep English words in English and write the Urdu words in Roman Urdu.
+- Example: for the Urdu sentence meaning "he filed a case in court", write "usne court mein ek case dayar kiya" — NOT "usne court mein ek case दायर kiya" and NOT "دائر".
 
-Do NOT translate. Do NOT summarize. Just transcribe what is said.`;
+Do NOT translate Urdu into English. Do NOT summarize. Just transcribe what is said, in Roman Urdu + English (Latin letters) only.`;
 
     const transcription = await geminiGenerate([
       { inlineData: { mimeType, data: base64 } },

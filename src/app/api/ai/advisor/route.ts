@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
     let sources: GroundingSource[] = [];
     const blocks: string[] = [];
     if (groundNow) {
-      const { sources: found, block } = retrieveGrounding(realQuestion);
+      const { sources: found, block } = await retrieveGrounding(realQuestion);
       if (block) {
         sources = found;
         blocks.push(block);

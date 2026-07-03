@@ -164,14 +164,78 @@ export default function JudgmentSearchPage() {
     return onSavedJudgmentsChange(refreshSaved);
   }, [refreshSaved]);
 
-  // Deep-link search: e.g. /case-law?q=2015%20PLJ%201122&mode=citation
-  // (used by the AI Advisor's verified-source links and cited-case jumps).
+  // Deep-link handlers (run once on mount):
+  //  • /case-law?open=<id>  → open that exact judgment straight in the reader.
+  //    Used by the AI Advisor's verified-source links so the cited judgment
+  //    always opens by its real DB id (no fuzzy citation re-search that could
+  //    land on a different or text-less record). If the id can't be resolved
+  //    (e.g. an older chat whose id is stale), it falls back to the `q` search
+  //    so the user still sees results instead of a blank page.
+  //  • /case-law?q=2015%20PLJ%201122&mode=citation → run a search.
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
     const q = sp.get("q");
-    if (!q) return;
     const mode = sp.get("mode");
     if (mode === "citation" || mode === "keyword") setSearchMode(mode);
+
+    // Fall back to a normal search (by citation/keyword) when we can't open by id.
+    const fallbackSearch = () => {
+      if (!q) return;
+      setQuery(q);
+      runSearch(q);
+    };
+
+    const openId = sp.get("open");
+    if (openId && /^\d+$/.test(openId)) {
+      // If the caller (AI Advisor) passed the judgment's metadata in the URL,
+      // open the reader straight away WITHOUT a fetch. The reader loads the full
+      // text itself, so this avoids pulling the (large) content twice over the
+      // slow proxy — the double-pull was causing the "connection was slow" error.
+      const metaCourt = sp.get("court");
+      if (metaCourt) {
+        setReader({
+          id: Number(openId),
+          citation: q || sp.get("title") || "Judgment",
+          reported: sp.get("rep") === "1",
+          court: metaCourt,
+          year: Number(sp.get("year") || 0),
+          title: sp.get("title") || null,
+          caseNo: null,
+          passages: [],
+          processed: 1,
+        });
+        return;
+      }
+      // No metadata (e.g. an older link) — fetch it, falling back to search.
+      (async () => {
+        try {
+          const r = await fetch(`/api/judgments/local/${openId}`);
+          const d = await r.json().catch(() => ({}));
+          const j = d.judgment;
+          if (j) {
+            const real = j.real_citation && String(j.real_citation).trim();
+            setReader({
+              id: Number(j.id),
+              citation: real || j.citation,
+              reported: !!real,
+              court: j.court || "Unknown Court",
+              year: Number(j.year || 0),
+              title: j.title || null,
+              caseNo: null,
+              passages: [],
+              processed: Number(j.processed || 0),
+            });
+          } else {
+            fallbackSearch();
+          }
+        } catch {
+          fallbackSearch();
+        }
+      })();
+      return;
+    }
+
+    if (!q) return;
     setQuery(q);
     runSearch(q);
     // run once on mount

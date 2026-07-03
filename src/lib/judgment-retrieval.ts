@@ -2,7 +2,7 @@
 // real local judgment corpus, so the model cites judgments that actually exist
 // instead of inventing citations.
 
-import { searchCandidatesFast } from "@/lib/judgment-db";
+import { relatedLocalJudgments } from "@/lib/judgment-db-runtime";
 
 export interface GroundingSource {
   id: number;
@@ -62,27 +62,35 @@ export interface Grounding {
 /**
  * Find real judgments relevant to a legal question and build a grounding block.
  * Prefers reported (citable) judgments. Always safe — returns empty on any error.
+ *
+ * IMPORTANT: this searches the SAME corpus the Judgment Reader opens (Postgres at
+ * runtime), and only cites judgments that actually have readable full text — so a
+ * cited judgment always opens with its text instead of "full text not yet
+ * extracted". (Previously it read the local SQLite corpus, which contained
+ * judgments that are missing or empty in Postgres, so the reader showed nothing.)
  */
-export function retrieveGrounding(question: string, max = 5): Grounding {
+export async function retrieveGrounding(question: string, max = 5): Promise<Grounding> {
   try {
     const terms = termsFromQuestion(question);
     if (!terms.length) return { sources: [], block: "" };
 
-    // Only fetch a few more than we keep (`max`) — this runs on the critical
-    // path before the model can start replying, so less work = faster answer.
-    const candidates = searchCandidatesFast(terms, undefined, undefined, max + 5);
+    // OR-match the key terms over the Postgres corpus. Fetch a few extra so we
+    // can drop any text-less rows and still fill `max`.
+    const query = terms.join(" ");
+    const candidates = await relatedLocalJudgments(query, undefined, undefined, max + 8);
     if (!candidates.length) return { sources: [], block: "" };
 
-    // Reported (real citation) first — that's what a lawyer can actually cite.
-    const ranked = [...candidates].sort((a, b) => Number(b.reported) - Number(a.reported));
+    // Keep only judgments that carry real text (so the citation opens with
+    // content), and put reported (citable) ones first.
+    const withText = candidates.filter(
+      (c) => c.passages.some((p) => p.replace(/\s+/g, " ").trim().length >= 60),
+    );
+    const ranked = [...withText].sort((a, b) => Number(b.reported) - Number(a.reported));
     const picked = ranked.slice(0, max);
 
     const sources: GroundingSource[] = [];
     const blocks: string[] = [];
     picked.forEach((c, i) => {
-      // Use the matched excerpts we already have. (Previously this re-queried the
-      // full judgment row per candidate — 5 extra SELECTs pulling multi-MB content
-      // fields synchronously, which blocked the event loop and slowed every reply.)
       // Cap each snippet — the model only needs enough to recognise the case,
       // and a smaller prompt means a faster first token.
       const snippet = (c.passages.join(" ") || "").replace(/\s+/g, " ").trim().slice(0, 700);

@@ -9,7 +9,7 @@ import LoadingSpinner from "@/components/ui/LoadingSpinner";
 import {
   Search, Sparkles, ArrowLeft, Scale, BookOpen,
   ChevronRight, TrendingUp, TrendingDown, Minus,
-  FileText, AlertTriangle, Eye, Plus, Trash2, X,
+  FileText, AlertTriangle, Eye, Plus, Trash2, X, HelpCircle,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -134,6 +134,9 @@ function FilledDetails({ items }: { items: { label: string; value: string }[] })
 export default function CaseBuilderPage() {
   const [stage, setStage] = useState<Stage>("input");
   const [error, setError] = useState<string | null>(null);
+  // "How It Works" helper is hidden by default and revealed via the "?" button,
+  // so the form gets a clean, uncluttered view (same pattern as AI Advisor).
+  const [showHelp, setShowHelp] = useState(false);
 
   // Input fields — required
   const [sections, setSections] = useState("");
@@ -1001,6 +1004,19 @@ Client Position: ${result.searchTerms.clientPosition}`;
             <Search className="h-4 w-4" style={{ color: "#06b6d4" }} />
           </div>
           <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>Case Builder</h1>
+          {/* Reveal the "How It Works" helper on demand — keeps the form clean */}
+          <button
+            onClick={() => setShowHelp((v) => !v)}
+            title="How It Works"
+            aria-label="How It Works"
+            className={`ml-auto grid place-items-center h-8 w-8 rounded-lg border transition-all ${
+              showHelp
+                ? "bg-primary-500/15 border-primary-500/40 text-primary-300"
+                : "border-[var(--border-default)] bg-[var(--bg-surface-2)] text-[var(--text-tertiary)] hover:text-primary-400 hover:border-primary-500/40"
+            }`}
+          >
+            <HelpCircle className="h-4 w-4" />
+          </button>
         </div>
         <p className="text-sm pl-0.5" style={{ color: "var(--text-secondary)" }}>
           Enter your case details — AI will find relevant judgments and draft your document.
@@ -1287,24 +1303,36 @@ Client Position: ${result.searchTerms.clientPosition}`;
         </button>
       </Card>
 
-      {/* How it works */}
-      <Card className="p-4" style={{ background: "var(--bg-surface-1)", borderColor: "var(--border-subtle)" }}>
-        <p className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: "var(--text-tertiary)" }}>How It Works</p>
-        <div className="space-y-2.5">
-          {[
-            { icon: Search, text: "AI extracts keywords and searches all Pakistani judgments" },
-            { icon: Scale, text: "Selects the 5 most relevant judgments with favorable/adverse analysis" },
-            { icon: FileText, text: "Drafts your document using the research without adding blanket reliance lines" },
-          ].map(({ icon: Icon, text }, i) => (
-            <div key={i} className="flex items-start gap-3">
-              <div className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "rgba(6,182,212,0.1)" }}>
-                <Icon className="h-3.5 w-3.5" style={{ color: "#06b6d4" }} />
+      {/* How it works — revealed on demand via the "?" button */}
+      {showHelp && (
+        <Card className="p-4" style={{ background: "var(--bg-surface-1)", borderColor: "var(--border-subtle)" }}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>How It Works</p>
+            <button
+              onClick={() => setShowHelp(false)}
+              title="Close"
+              aria-label="Close"
+              className="grid place-items-center h-6 w-6 rounded-lg transition-colors hover:bg-[var(--bg-surface-2)]"
+            >
+              <X className="h-3.5 w-3.5" style={{ color: "var(--text-tertiary)" }} />
+            </button>
+          </div>
+          <div className="space-y-2.5">
+            {[
+              { icon: Search, text: "AI extracts keywords and searches all Pakistani judgments" },
+              { icon: Scale, text: "Selects the 5 most relevant judgments with favorable/adverse analysis" },
+              { icon: FileText, text: "Drafts your document using the research without adding blanket reliance lines" },
+            ].map(({ icon: Icon, text }, i) => (
+              <div key={i} className="flex items-start gap-3">
+                <div className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "rgba(6,182,212,0.1)" }}>
+                  <Icon className="h-3.5 w-3.5" style={{ color: "#06b6d4" }} />
+                </div>
+                <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{text}</p>
               </div>
-              <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{text}</p>
-            </div>
-          ))}
-        </div>
-      </Card>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

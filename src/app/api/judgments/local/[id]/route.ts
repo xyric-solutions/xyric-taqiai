@@ -13,7 +13,14 @@ export async function GET(
   const numId = parseInt(id);
   if (isNaN(numId)) return NextResponse.json({ error: "Invalid ID" }, { status: 400 });
 
-  const judgment = await getLocalJudgmentById(numId);
+  let judgment;
+  try {
+    judgment = await getLocalJudgmentById(numId);
+  } catch {
+    // Transient DB/proxy failure — tell the client to retry rather than letting
+    // it show "Full text not yet extracted" for a judgment that actually exists.
+    return NextResponse.json({ error: "Temporarily unavailable" }, { status: 503 });
+  }
   if (!judgment) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const citedBy = await getCitedByCount(judgment.real_citation || judgment.citation);
