@@ -28,11 +28,10 @@ function localStatutesAvailable(): boolean {
 function usePostgres(): boolean {
   const isPg = /^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL || "");
   if (!isPg) return false;
-  // Local dev: prefer the local SQLite statutes corpus over the flaky Railway
-  // public proxy (which adds seconds/timeouts to every Advisor turn). Production
-  // (NODE_ENV=production, no local .db) always uses Postgres. Mirrors the same
-  // guard in judgment-db-runtime.
-  if (process.env.NODE_ENV === "production") return true;
+  // Prefer the local SQLite statutes corpus whenever the file is present — fast,
+  // no proxy. Covers both `next dev` and a local production build. On Railway the
+  // .db files are gitignored / not deployed, so Postgres is used there. Mirrors
+  // the same guard in judgment-db-runtime (deliberately NOT gated on NODE_ENV).
   return !localStatutesAvailable();
 }
 

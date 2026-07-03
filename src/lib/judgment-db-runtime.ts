@@ -37,14 +37,13 @@ function localSqliteAvailable(): boolean {
 function usePostgres(): boolean {
   const isPg = /^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL || "");
   if (!isPg) return false;
-  // Local dev connects to the LIVE Railway Postgres over a flaky PUBLIC PROXY
-  // that drops connections and makes judgments fail to load ("connection was
-  // slow"). When the local SQLite corpus is present (278k judgments w/ FTS5,
-  // ~15ms searches — and it is NOT deployed to Railway), read judgments from it
-  // instead: fast, reliable, no proxy, and it keeps the Advisor's cited judgments
-  // consistent with what the reader opens. Production (Railway) runs with
-  // NODE_ENV=production and no local .db file, so it always uses Postgres.
-  if (process.env.NODE_ENV === "production") return true;
+  // Prefer the local SQLite corpus whenever the file is present — fast and
+  // reliable, no proxy (278k judgments w/ FTS5, ~15ms). This covers BOTH
+  // `next dev` and a LOCAL production build (`next start`), which would
+  // otherwise hit the flaky Railway PUBLIC PROXY and fail with "connection was
+  // slow". On Railway the .db files are gitignored / not deployed, so this is
+  // false there and Postgres is used. (Deliberately NOT gated on NODE_ENV, so a
+  // local production build stays on the fast local corpus.)
   return !localSqliteAvailable();
 }
 
@@ -443,20 +442,21 @@ export async function getJudgmentDbStats(): Promise<{ total: number; processed: 
 
 export async function getLocalJudgmentById(id: number): Promise<JudgmentRow | null> {
   if (usePostgres()) {
-    // Retry a few times: the public proxy used in local dev drops connections
-    // intermittently, and a single failure here otherwise surfaces as a bogus
-    // "Full text not yet extracted" even though the judgment HAS content.
+    // Retry several times: a flaky proxy (or a transient Railway pool blip) can
+    // drop a connection, and a single failure here otherwise surfaces as a bogus
+    // "connection was slow" even though the judgment HAS content. Select only the
+    // columns we need (lighter than SELECT *).
     let lastErr: unknown = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       try {
         const rows = await prisma.$queryRawUnsafe<JudgmentRow[]>(
-          "SELECT * FROM legal_judgments WHERE id = $1 LIMIT 1",
+          "SELECT id, citation, real_citation, court, year, title, content, processed FROM legal_judgments WHERE id = $1 LIMIT 1",
           id
         );
         return rows[0] || null;
       } catch (e) {
         lastErr = e;
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 400 + attempt * 300));
       }
     }
     // All attempts failed — signal a transient error (not "no such judgment")
