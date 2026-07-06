@@ -7,7 +7,7 @@ import {
   Home, Bot, Library, PenLine, Handshake, FilePlus,
   HeartHandshake, ShieldAlert, Building2, Scale, Briefcase,
   Calculator, Globe, Landmark, Users, Folder, Gavel,
-  Calendar, Languages, Settings,
+  Languages, Settings,
   ChevronDown, X, ScrollText, LogOut, ScanLine, Mic, Layers,
 } from "lucide-react";
 import { useSidebarCollapsed, setSidebarCollapsed } from "@/lib/sidebar-store";
@@ -42,8 +42,7 @@ const draftItems = [
 
 const managementItems = [
   { name: "My Documents", href: "/documents",    icon: Folder          },
-  { name: "Case Management", href: "/chamber",   icon: Gavel           },
-  { name: "Lawyer Diary", href: "/lawyer-diary", icon: Calendar        },
+  { name: "Lawyer Diary", href: "/lawyer-diary", icon: Gavel           },
 ];
 
 const toolItems = [

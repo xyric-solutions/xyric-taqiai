@@ -61,6 +61,9 @@ export async function PATCH(req: Request, ctx: RouteContext) {
     nextHearing?: string | null;
     notes?: string;
     documentIds?: string[];
+    stage?: string;
+    proceeding?: string;
+    lastDate?: string | null;
   };
 
   try {
@@ -99,6 +102,11 @@ export async function PATCH(req: Request, ctx: RouteContext) {
         nextHearing: body.nextHearing ? new Date(body.nextHearing) : null,
       }),
       ...(body.notes !== undefined && { notes: body.notes || null }),
+      ...(body.stage !== undefined && { stage: body.stage || null }),
+      ...(body.proceeding !== undefined && { proceeding: body.proceeding || null }),
+      ...(body.lastDate !== undefined && {
+        lastDate: body.lastDate ? new Date(body.lastDate) : null,
+      }),
     },
     include: { hearings: { orderBy: { date: "desc" } } },
   });

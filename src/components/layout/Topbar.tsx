@@ -8,7 +8,7 @@ import {
   Home, Bot, PenLine, Briefcase, Folder, Settings,
   Languages, Calculator, BookMarked, FilePlus, Users, ShieldAlert,
   Scale, BookOpen, Library, Building2, Globe, Landmark,
-  Gavel, Calendar, Handshake,
+  Gavel, Handshake,
   HeartHandshake, FileText, ScanLine, Mic,
 } from "lucide-react";
 import { toggleSidebarCollapsed } from "@/lib/sidebar-store";
@@ -34,8 +34,6 @@ const CAT_META: Record<string, { route: string; title: string }> = {
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard":                        "Dashboard",
   "/ai-advisor":                       "AI Advisor",
-  "/cases":                            "Case Management",
-  "/chamber":                          "Case Management",
   "/case-law":                         "Case Law",
   "/statute-search":                   "Statute Search",
   "/affidavits":                       "Affidavits",
@@ -80,8 +78,7 @@ const SEARCH_ITEMS = [
   { label: "Constitutional", href: "/constitutional-law",category: "Draft", icon: Landmark,       keywords: ["constitutional","writ","article","آئین"] },
   { label: "Non-Muslim Laws",href: "/non-muslim-laws",category: "Draft",    icon: Users,          keywords: ["non muslim","christian","hindu","minority"] },
   { label: "My Documents",   href: "/documents",    category: "Management", icon: Folder,         keywords: ["documents","files","saved","meri file"] },
-  { label: "Case Management", href: "/chamber",     category: "Management", icon: Gavel,          keywords: ["court","case","hearing","tarikh","case management","mukadma","cases","chamber","matter","deadline","calendar"] },
-  { label: "Lawyer Diary",   href: "/lawyer-diary", category: "Management", icon: Calendar,       keywords: ["diary","notes","reminder"] },
+  { label: "Lawyer Diary",   href: "/lawyer-diary", category: "Management", icon: Gavel,          keywords: ["diary","notes","reminder","court","case","hearing","tarikh","case management","mukadma","cases","chamber","matter","deadline","calendar"] },
   { label: "Translate",      href: "/translate",    category: "Tools",      icon: Languages,      keywords: ["translate","urdu","english","tarjuma"] },
   { label: "Tax Calculator", href: "/property-transfer/tax-calculator",category:"Tools",icon: Calculator,keywords: ["tax calculator","stamp duty","property transfer"] },
   { label: "Settings",       href: "/settings",     category: "Settings",   icon: Settings,       keywords: ["settings","profile","account","password"] },

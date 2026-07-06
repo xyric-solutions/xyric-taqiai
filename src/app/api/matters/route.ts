@@ -48,6 +48,9 @@ export async function POST(req: Request) {
     dateFiled?: string;
     nextHearing?: string;
     notes?: string;
+    stage?: string;
+    proceeding?: string;
+    lastDate?: string;
   };
 
   try {
@@ -86,6 +89,9 @@ export async function POST(req: Request) {
       dateFiled: body.dateFiled ? new Date(body.dateFiled) : null,
       nextHearing: body.nextHearing ? new Date(body.nextHearing) : null,
       notes: body.notes?.trim() || null,
+      stage: body.stage?.trim() || null,
+      proceeding: body.proceeding?.trim() || null,
+      lastDate: body.lastDate ? new Date(body.lastDate) : null,
     },
   });
 

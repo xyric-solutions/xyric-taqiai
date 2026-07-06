@@ -260,7 +260,6 @@ export default function DashboardPage() {
   // ── Live data ──
   const [user, setUser] = useState<{ name: string } | null>(null);
   const [matters, setMatters] = useState<MatterLite[]>([]);
-  const [diary, setDiary] = useState<DiaryLite[]>([]);
   const [docs, setDocs] = useState<SavedDocument[]>([]);
   const [saved, setSaved] = useState<SavedJudgment[]>([]);
   const docCount = docs.length;
@@ -279,11 +278,6 @@ export default function DashboardPage() {
       .then((data) => { if (active) setMatters(data.matters ?? []); })
       .catch(() => { if (active) setMatters([]); });
 
-    fetch("/api/diary")
-      .then((res) => (res.ok ? res.json() : { entries: [] }))
-      .then((data) => { if (active) setDiary(data.entries ?? []); })
-      .catch(() => { if (active) setDiary([]); });
-
     getAllDocuments()
       .then((d) => { if (active) setDocs(d); })
       .catch(() => { if (active) setDocs([]); });
@@ -295,15 +289,11 @@ export default function DashboardPage() {
     return () => { active = false; unsub(); };
   }, []);
 
-  // ── Unified hearings from all three case systems ──
+  // ── Upcoming hearings from the Lawyer Diary (matters) ──
   const hearings: Hearing[] = [
     ...matters.map((m): Hearing | null => m.nextHearing ? {
       id: `m_${m.id}`, title: m.title, court: m.court || "", ref: m.caseNo || "",
-      date: m.nextHearing, href: "/chamber", source: "Case",
-    } : null).filter(Boolean) as Hearing[],
-    ...diary.map((d): Hearing | null => d.nextDate ? {
-      id: `d_${d.id}`, title: d.title, court: d.courtName || "", ref: d.caseNumber || "",
-      date: d.nextDate, href: "/lawyer-diary", source: "Diary",
+      date: m.nextHearing, href: "/lawyer-diary", source: "Diary",
     } : null).filter(Boolean) as Hearing[],
   ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
@@ -384,7 +374,7 @@ export default function DashboardPage() {
               </div>
               <div className="flex items-center gap-2.5 flex-shrink-0">
                 <Link
-                  href="/chamber"
+                  href="/lawyer-diary"
                   className="inline-flex items-center gap-1.5 h-10 px-3.5 rounded-lg text-[13px] font-semibold transition-colors"
                   style={{ color: "var(--text-secondary)", background: "var(--bg-surface-1)", border: "1px solid var(--border-default)" }}
                 >
@@ -445,7 +435,7 @@ export default function DashboardPage() {
                     </p>
                     <p className="text-[13.5px] mt-0.5" style={{ color: "var(--text-secondary)" }}>No upcoming hearings. Add a hearing date to a case and it will appear here.</p>
                   </div>
-                  <Link href="/chamber" className="inline-flex items-center gap-1 text-[12px] font-semibold text-primary-400 hover:text-primary-300 flex-shrink-0">
+                  <Link href="/lawyer-diary" className="inline-flex items-center gap-1 text-[12px] font-semibold text-primary-400 hover:text-primary-300 flex-shrink-0">
                     Go to Cases <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.25} />
                   </Link>
                 </div>
@@ -479,10 +469,10 @@ export default function DashboardPage() {
               {/* Cause list — unified across Cases, Chamber & Diary */}
               <section className="rounded-xl flex flex-col overflow-hidden" style={cardStyle}>
                 <CardHead title={todayHearings.length > 0 ? "Today's Cause List" : "Upcoming Hearings"} action={
-                  <Link href="/chamber" className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>View Cases</Link>
+                  <Link href="/lawyer-diary" className="text-[11px] font-semibold transition-colors hover:text-primary-400" style={{ color: "var(--text-tertiary)" }}>View Cases</Link>
                 } />
                 {causeList.length === 0 ? (
-                  <Empty icon={CalendarDays} text="No hearings scheduled. Add a hearing date to a case and your cause list will appear here." cta="Add a hearing" href="/chamber" />
+                  <Empty icon={CalendarDays} text="No hearings scheduled. Add a hearing date to a case and your cause list will appear here." cta="Add a hearing" href="/lawyer-diary" />
                 ) : (
                   <>
                     <div className="px-2 py-1">
@@ -507,7 +497,7 @@ export default function DashboardPage() {
                       })}
                     </div>
                     <div className="flex items-center gap-2 px-4 py-3 mt-auto text-[11px]" style={{ borderTop: "1px solid var(--border-subtle)", color: "var(--text-tertiary)" }}>
-                      <Clock className="h-3.5 w-3.5" strokeWidth={1.75} /> Pulled from Case Management, Chamber & Diary
+                      <Clock className="h-3.5 w-3.5" strokeWidth={1.75} /> Pulled from your Lawyer Diary
                     </div>
                   </>
                 )}

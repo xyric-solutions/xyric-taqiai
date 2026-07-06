@@ -86,6 +86,11 @@ model Matter {
   notes       String?
   documentIds String   @default("[]")
   archived    Boolean  @default(false)
+  // Merged from the former Lawyer Diary (DiaryEntry): hearing stage, what happened
+  // at the last hearing, and the previous hearing date.
+  stage       String?
+  proceeding  String?
+  lastDate    DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

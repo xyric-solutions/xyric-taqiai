@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-// Case Management was consolidated into Chamber (/chamber). Old links redirect.
+// The legacy Case Management pages now live in the Lawyer Diary.
 export default function CasesRedirect() {
-  redirect("/chamber");
+  redirect("/lawyer-diary");
 }
