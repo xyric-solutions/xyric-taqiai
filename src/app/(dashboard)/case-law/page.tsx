@@ -109,6 +109,9 @@ export default function JudgmentSearchPage() {
   // The user searched a specific reported citation we don't hold — tell them
   // honestly instead of dumping every same-year judgment.
   const [citationNotFound, setCitationNotFound] = useState(false);
+  // When a citation isn't held, the user can describe the case in a few words so
+  // we can surface topically related judgments we DO have.
+  const [refineKw, setRefineKw] = useState("");
   // Smart (semantic) search fell back to keyword because the local model is offline
   const [semanticFallback, setSemanticFallback] = useState(false);
   const [localLoading, setLocalLoading] = useState(false);
@@ -321,6 +324,16 @@ export default function JudgmentSearchPage() {
   const goToPage = (p: number) => {
     if (p < 1 || localLoading) return;
     runSearch(undefined, { page: p });
+  };
+
+  // Citation not held → the user tells us what the case was about; we search those
+  // keywords instead so they still walk away with topically relevant judgments.
+  const handleRefineByKeyword = () => {
+    const kw = refineKw.trim();
+    if (!kw || localLoading) return;
+    setQuery(kw);
+    setRefineKw("");
+    runSearch(kw);
   };
 
   const handleAskAI = async () => {
@@ -666,11 +679,27 @@ export default function JudgmentSearchPage() {
                         &ldquo;{query}&rdquo; is not in our library yet
                       </h3>
                       <p className="text-[12px] mt-1 leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-                        We don&apos;t hold this exact citation. Double-check the citation number, or search by party name or keywords. You can also ask AI about it.
+                        We don&apos;t hold this exact citation. Tell us what the case is about, in a few words, and we&apos;ll find related judgments we do have.
                       </p>
+                      {/* keyword refine: a citation number carries no topic, so we ask
+                          the user for one and search that instead */}
+                      <div className="mt-3 flex items-center gap-2 max-w-md">
+                        <input
+                          value={refineKw}
+                          onChange={(e) => setRefineKw(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") handleRefineByKeyword(); }}
+                          placeholder="e.g. bail in narcotics, 489-F cheque, land inheritance"
+                          className="flex-1 min-w-0 px-3 py-2 text-[12px] rounded-lg outline-none focus:border-primary-500/50 transition-colors"
+                          style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+                        />
+                        <button onClick={handleRefineByKeyword} disabled={!refineKw.trim() || localLoading}
+                          className="px-3.5 py-2 text-[12px] font-semibold rounded-lg bg-primary-500 text-[#07090f] hover:bg-primary-400 transition-all disabled:opacity-50 whitespace-nowrap">
+                          Find related
+                        </button>
+                      </div>
                       <button onClick={handleAskAI} disabled={aiLoading || !query.trim()}
-                        className="mt-3 inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-semibold rounded-lg bg-primary-500 text-[#07090f] hover:bg-primary-400 transition-all disabled:opacity-50">
-                        <Sparkles className="h-3.5 w-3.5" strokeWidth={2} /> Ask AI about this
+                        className="mt-2.5 inline-flex items-center gap-1.5 text-[12px] font-semibold text-primary-400 hover:text-primary-300 transition-all disabled:opacity-50">
+                        <Sparkles className="h-3.5 w-3.5" strokeWidth={2} /> Or ask AI about this citation
                       </button>
                     </div>
                   </div>
