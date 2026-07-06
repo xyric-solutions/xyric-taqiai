@@ -6,14 +6,24 @@ import Button from "@/components/ui/Button";
 import {
   Calculator, Info, Plus, Trash2, Printer,
   ChevronDown, ChevronUp, CheckCircle2,
-  LandPlot, Home, Sprout,
+  LandPlot, Home, Sprout, HelpCircle, X,
 } from "lucide-react";
+
+// Steps the calculator runs — surfaced in the header "?" helper and the empty state.
+const WHAT_GETS_CALCULATED = [
+  "Acre + Kanal + Marla + Sqft into total size",
+  "272 or 225 Sqft/Marla standard",
+  "DC Rate per Marla or per Sqft",
+  "House: Land Value + Malba",
+  "Tax base = higher of DC or Market Value",
+  "Stamp Duty, CVT, PLRA, Registration Fee",
+  "Commission + other fees",
+];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type PropertyType   = "plot" | "house" | "agriculture";
 type TransactionType = "sale" | "gift" | "inheritance" | "mortgage";
-type FilerStatus    = "filer" | "non-filer";
 type DcRateMode     = "per-marla" | "per-sqft";
 
 interface OtherFee { id: string; label: string; amount: string; }
@@ -42,9 +52,6 @@ interface TaxResult {
   cvt: number;
   registrationFee: number;
   plraTax: number;
-  whtBuyer: number;
-  whtSeller: number;
-  capitalGainTax: number;
   localCommission: number;
   otherFeesTotal: number;
   grandTotal: number;
@@ -236,22 +243,13 @@ export default function TaxCalculatorPage() {
   // Market value
   const [marketValue, setMarketValue] = useState("");
 
-  // FBR
-  const [buyerFilerStatus, setBuyerFilerStatus]   = useState<FilerStatus>("filer");
-  const [sellerFilerStatus, setSellerFilerStatus] = useState<FilerStatus>("filer");
-  const [whtBuyerRate, setWhtBuyerRate]   = useState("3");
-  const [whtSellerRate, setWhtSellerRate] = useState("3");
-
-  // CGT
-  const [purchasePrice, setPurchasePrice] = useState("");
-  const [cgtRate, setCgtRate]             = useState("");
-
   // Fees
   const [localCommission, setLocalCommission] = useState("");
   const [otherFees, setOtherFees]             = useState<OtherFee[]>([]);
 
   const [result, setResult] = useState<TaxResult | null>(null);
   const [error, setError]   = useState("");
+  const [showHelp, setShowHelp] = useState(false);
 
   // ── Live size preview ──────────────────────────────────────────────────────
   const liveSize = useMemo(() => calcSize(size, sqftPerMarla), [size, sqftPerMarla]);
@@ -320,22 +318,12 @@ export default function TaxCalculatorPage() {
     const registrationFee = Math.min(higherValue * 0.01, 50000);
     const plraTax        = province === "punjab" ? higherValue * 0.01 : 0;
 
-    // FBR
-    const whtBuyer  = higherValue * (parseFloat(whtBuyerRate)  / 100);
-    const whtSeller = higherValue * (parseFloat(whtSellerRate) / 100);
-
-    // CGT
-    const purchasePr     = parseFloat(purchasePrice) || 0;
-    const gain           = purchasePr > 0 ? market - purchasePr : 0;
-    const capitalGainTax = gain > 0 ? gain * ((parseFloat(cgtRate) || 0) / 100) : 0;
-
     // Fees
     const localComm     = parseFloat(localCommission) || 0;
     const otherFeesTotal = otherFees.reduce((s, f) => s + (parseFloat(f.amount) || 0), 0);
 
     const grandTotal =
       stampDuty + cvt + registrationFee + plraTax +
-      whtBuyer + whtSeller + capitalGainTax +
       localComm + otherFeesTotal;
 
     setResult({
@@ -348,7 +336,6 @@ export default function TaxCalculatorPage() {
       marketValue: market,
       higherValue,
       stampDuty, cvt, registrationFee, plraTax,
-      whtBuyer, whtSeller, capitalGainTax,
       localCommission: localComm,
       otherFeesTotal,
       grandTotal,
@@ -386,39 +373,105 @@ export default function TaxCalculatorPage() {
             Property Tax Calculator
           </h1>
           <p className="text-[var(--text-secondary)] text-sm mt-1">
-            DC Rate, FBR WHT, Stamp Duty and CGT in one e-stamp-style breakdown
+            DC Valuation, Stamp Duty, CVT, PLRA and Registration Fee in one e-stamp-style breakdown
           </p>
           <p className="text-[11px] text-[var(--text-tertiary)] mt-0.5">
             Rates last updated November 2024. Verify with the DC Office before filing.
           </p>
         </div>
-        {result && (
-          <Button variant="outline" size="sm" onClick={() => window.print()} className="print:hidden flex items-center gap-2">
-            <Printer className="h-4 w-4" /> Print Summary
-          </Button>
-        )}
+        <div className="flex items-center gap-2 print:hidden">
+          {/* "?" — what the calculator does, on demand */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowHelp(v => !v)}
+              title="What gets calculated"
+              aria-label="What gets calculated"
+              className={`grid place-items-center h-9 w-9 rounded-xl border transition-all ${
+                showHelp
+                  ? "border-primary-500/50 bg-primary-500/10 text-primary-400"
+                  : "border-[var(--border-default)] bg-[var(--bg-surface-1)] text-[var(--text-tertiary)] hover:text-primary-400 hover:border-primary-500/40"
+              }`}
+            >
+              <HelpCircle className="h-4 w-4" strokeWidth={1.5} />
+            </button>
+
+            {showHelp && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowHelp(false)} />
+                <div
+                  className="absolute right-0 top-full mt-2 w-80 z-20 rounded-2xl p-4 space-y-3"
+                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", boxShadow: "0 16px 40px rgba(0,0,0,0.5)" }}
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-secondary)]">What gets calculated</p>
+                    <button onClick={() => setShowHelp(false)} title="Close" aria-label="Close" className="grid place-items-center h-6 w-6 rounded-lg hover:bg-[var(--bg-surface-1)] transition-colors">
+                      <X className="h-3.5 w-3.5 text-[var(--text-tertiary)]" />
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {WHAT_GETS_CALCULATED.map(t => (
+                      <div key={t} className="flex items-start gap-2.5">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-primary-400 mt-0.5 flex-shrink-0" strokeWidth={1.5} />
+                        <span className="text-xs text-[var(--text-secondary)] leading-relaxed">{t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {result && (
+            <Button variant="outline" size="sm" onClick={() => window.print()} className="flex items-center gap-2">
+              <Printer className="h-4 w-4" /> Print Summary
+            </Button>
+          )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
 
         {/* ══════════════════ INPUT PANEL ══════════════════ */}
         <div className="space-y-4">
 
           {/* Step 1 — Property Details */}
           <StepCard step={1} title="Property Details">
-            <div className="grid grid-cols-3 gap-2">
-              {([
-                { t: "plot" as const,        icon: LandPlot, label: "Plot" },
-                { t: "house" as const,       icon: Home,     label: "House" },
-                { t: "agriculture" as const, icon: Sprout,   label: "Agriculture" },
-              ]).map(({ t, icon: Icon, label }) => (
-                <SegBtn key={t} active={propertyType === t}
-                  onClick={() => { setPropertyType(t); if (t !== "house") setMalbaRate(""); }}>
-                  <span className="flex items-center justify-center gap-1.5">
-                    <Icon className="h-4 w-4" strokeWidth={1.5} /> {label}
-                  </span>
-                </SegBtn>
-              ))}
+            <div>
+              <label className={labelCls}>Property Type</label>
+              <div className="grid grid-cols-3 gap-2.5">
+                {([
+                  { t: "plot" as const,        icon: LandPlot, label: "Plot",        hint: "Open land" },
+                  { t: "house" as const,       icon: Home,     label: "House",       hint: "Built-up" },
+                  { t: "agriculture" as const, icon: Sprout,   label: "Agriculture", hint: "Farmland" },
+                ]).map(({ t, icon: Icon, label, hint }) => {
+                  const active = propertyType === t;
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => { setPropertyType(t); if (t !== "house") setMalbaRate(""); }}
+                      className={`group relative flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3.5 transition-all ${
+                        active
+                          ? "border-primary-500/60 bg-primary-500/[0.08]"
+                          : "border-[var(--border-subtle)] hover:border-[var(--border-default)] hover:bg-[var(--bg-surface-2)]"
+                      }`}
+                    >
+                      {active && <CheckCircle2 className="absolute top-1.5 right-1.5 h-3.5 w-3.5 text-primary-400" strokeWidth={2} />}
+                      <span className={`grid place-items-center h-9 w-9 rounded-lg transition-colors ${
+                        active
+                          ? "bg-primary-500/15 text-primary-400"
+                          : "bg-[var(--bg-surface-2)] text-[var(--text-tertiary)] group-hover:text-[var(--text-secondary)]"
+                      }`}>
+                        <Icon className="h-[18px] w-[18px]" strokeWidth={1.5} />
+                      </span>
+                      <span className={`text-xs font-semibold leading-none ${active ? "text-primary-400" : "text-[var(--text-secondary)]"}`}>{label}</span>
+                      <span className="text-[10px] leading-none text-[var(--text-tertiary)]">{hint}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -622,93 +675,15 @@ export default function TaxCalculatorPage() {
             <div>
               <label className={labelCls}>
                 Actual Sale / Transaction Price (PKR) <span className="text-red-500">*</span>
-                <InfoTip text="Tax is applied on whichever is higher — DC Valuation or Market Value. FBR and provinces both use the higher amount." />
+                <InfoTip text="Tax is applied on whichever is higher: the DC Valuation or the Market Value. The provincial and registry charges use this higher amount." />
               </label>
               <input type="number" value={marketValue} onChange={e => setMarketValue(e.target.value)}
                 placeholder="e.g. 12,000,000" className={inputCls} min="0" />
             </div>
           </StepCard>
 
-          {/* Step 5 — FBR WHT */}
-          <StepCard step={5} title="FBR Withholding Tax">
-
-            {/* Buyer 236K */}
-            <div className="p-3.5 bg-info-500/[0.06] border border-info-500/20 rounded-xl space-y-3">
-              <div className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-info-500" />
-                <p className="text-xs font-bold text-info-500">Buyer, Section 236K</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={labelCls}>Filer Status</label>
-                  <select value={buyerFilerStatus} onChange={e => setBuyerFilerStatus(e.target.value as FilerStatus)} className={selectCls}>
-                    <option value="filer">Active Filer</option>
-                    <option value="non-filer">Non-Filer</option>
-                  </select>
-                </div>
-                <div>
-                  <label className={labelCls}>WHT Rate %</label>
-                  <select value={whtBuyerRate} onChange={e => setWhtBuyerRate(e.target.value)} className={selectCls}>
-                    <option value="3">3%</option>
-                    <option value="6">6%</option>
-                    <option value="10">10%</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Seller 236C */}
-            <div className="p-3.5 bg-warning-500/[0.06] border border-warning-500/20 rounded-xl space-y-3">
-              <div className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-warning-500" />
-                <p className="text-xs font-bold text-warning-500">Seller, Section 236C</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={labelCls}>Filer Status</label>
-                  <select value={sellerFilerStatus} onChange={e => setSellerFilerStatus(e.target.value as FilerStatus)} className={selectCls}>
-                    <option value="filer">Active Filer</option>
-                    <option value="non-filer">Non-Filer</option>
-                  </select>
-                </div>
-                <div>
-                  <label className={labelCls}>WHT Rate %</label>
-                  <select value={whtSellerRate} onChange={e => setWhtSellerRate(e.target.value)} className={selectCls}>
-                    <option value="3">3%</option>
-                    <option value="6">6%</option>
-                    <option value="10">10%</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-          </StepCard>
-
-          {/* Step 6 — CGT (optional) */}
-          <StepCard step={6} title="Capital Gains Tax (Optional)">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelCls}>
-                  Purchase / Cost Price (PKR)
-                  <InfoTip text="Original price you paid. CGT is calculated on: Sale Price – Cost Price." />
-                </label>
-                <input type="number" value={purchasePrice} onChange={e => setPurchasePrice(e.target.value)}
-                  placeholder="Original cost" className={inputCls} min="0" />
-              </div>
-              <div>
-                <label className={labelCls}>CGT Rate %</label>
-                <input type="number" value={cgtRate} onChange={e => setCgtRate(e.target.value)}
-                  placeholder="e.g. 15" className={inputCls} min="0" max="100" />
-              </div>
-            </div>
-            {purchasePrice && cgtRate && marketValue && (
-              <p className="text-[11px] text-primary-400 font-medium">
-                Estimated CGT = {fmt(Math.max(0, parseFloat(marketValue) - parseFloat(purchasePrice)) * (parseFloat(cgtRate) / 100))}
-              </p>
-            )}
-          </StepCard>
-
-          {/* Step 7 — Other Fees */}
-          <StepCard step={7} title="Fees &amp; Commission">
+          {/* Step 5 — Other Fees */}
+          <StepCard step={5} title="Fees &amp; Commission">
             <div>
               <label className={labelCls}>Local Commission / Dalali (PKR)</label>
               <input type="number" value={localCommission} onChange={e => setLocalCommission(e.target.value)}
@@ -744,7 +719,8 @@ export default function TaxCalculatorPage() {
         </div>
 
         {/* ══════════════════ RESULTS PANEL ══════════════════ */}
-        <div className="space-y-4">
+        <div className="space-y-4 xl:sticky xl:top-6">
+
           {result ? (
             <>
               {/* ── Size Summary ── */}
@@ -807,18 +783,6 @@ export default function TaxCalculatorPage() {
                   value={fmt(result.stampDuty + result.cvt + result.registrationFee + result.plraTax)} />
               </CollapsibleCard>
 
-              {/* ── FBR Taxes ── */}
-              <CollapsibleCard title="FBR Federal Taxes" color="bg-warning-500">
-                <Row label={`WHT Buyer 236K (${whtBuyerRate}% · ${buyerFilerStatus})`}   value={fmt(result.whtBuyer)} />
-                <Row label={`WHT Seller 236C (${whtSellerRate}% · ${sellerFilerStatus})`} value={fmt(result.whtSeller)} />
-                {result.capitalGainTax > 0 && (
-                  <Row label={`CGT (${cgtRate}% on gain of ${fmt(result.marketValue - (parseFloat(purchasePrice) || 0))})`}
-                    value={fmt(result.capitalGainTax)} />
-                )}
-                <TotalRow label="FBR Total" color="orange"
-                  value={fmt(result.whtBuyer + result.whtSeller + result.capitalGainTax)} />
-              </CollapsibleCard>
-
               {/* ── Other Fees ── */}
               {(result.localCommission > 0 || result.otherFeesTotal > 0) && (
                 <CollapsibleCard title="Other Fees" color="bg-ai-500">
@@ -840,12 +804,10 @@ export default function TaxCalculatorPage() {
                   </div>
                   <span className="text-3xl font-bold text-primary-400 print:text-[var(--text-primary)]">{fmt(result.grandTotal)}</span>
                 </div>
-                <div className="grid grid-cols-3 gap-2 border-t border-[var(--border-default)] pt-4">
+                <div className="grid grid-cols-2 gap-2 border-t border-[var(--border-default)] pt-4">
                   {[
-                    { label: "Provincial",
+                    { label: "Provincial / Registry",
                       value: fmt(result.stampDuty + result.cvt + result.registrationFee + result.plraTax) },
-                    { label: "FBR",
-                      value: fmt(result.whtBuyer + result.whtSeller + result.capitalGainTax) },
                     { label: "Fees",
                       value: fmt(result.localCommission + result.otherFeesTotal) },
                   ].map(item => (
@@ -870,29 +832,21 @@ export default function TaxCalculatorPage() {
 
             /* ── Empty state ── */
             <Card className="p-10">
-              <div className="text-center text-[var(--text-tertiary)]">
-                <Calculator className="h-16 w-16 mx-auto mb-4 text-[var(--border-default)]" strokeWidth={1.5} />
-                <h3 className="text-base font-semibold text-[var(--text-secondary)]">Fill in the details, then Calculate</h3>
-                <p className="text-sm mt-1 mb-6 text-[var(--text-tertiary)]">Results will appear here</p>
-                <div className="text-left text-xs space-y-2 max-w-xs mx-auto text-[var(--text-secondary)] bg-[var(--bg-surface-1)] border border-[var(--bg-surface-2)] rounded-xl p-4">
-                  <p className="font-bold text-[var(--text-secondary)] mb-2 text-[11px] uppercase tracking-wide">What gets calculated</p>
-                  {[
-                    "Acre + Kanal + Marla + Sqft into total size",
-                    "272 or 225 Sqft/Marla standard",
-                    "DC Rate per Marla or per Sqft",
-                    "House: Land Value + Malba",
-                    "Tax base = higher of DC or Market Value",
-                    "Stamp Duty, CVT, PLRA, Registration Fee",
-                    "WHT Buyer 236K + Seller 236C",
-                    "Capital Gains Tax on profit",
-                    "Commission + other fees",
-                  ].map(t => (
-                    <div key={t} className="flex items-start gap-2">
-                      <CheckCircle2 className="h-3.5 w-3.5 text-primary-400 mt-0.5 flex-shrink-0" strokeWidth={1.5} />
-                      <span>{t}</span>
-                    </div>
-                  ))}
+              <div className="text-center">
+                <div className="mx-auto mb-4 grid place-items-center h-16 w-16 rounded-2xl bg-primary-500/10 border border-primary-500/20">
+                  <Calculator className="h-7 w-7 text-primary-400" strokeWidth={1.5} />
                 </div>
+                <h3 className="text-base font-semibold text-[var(--text-primary)]">Your tax breakdown appears here</h3>
+                <p className="text-sm mt-1.5 text-[var(--text-secondary)] max-w-xs mx-auto">
+                  Complete the steps on the left, then press <span className="font-semibold text-[var(--text-primary)]">Calculate Tax</span>.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowHelp(true)}
+                  className="mt-5 inline-flex items-center gap-1.5 text-xs font-semibold text-primary-400 hover:text-primary-300 transition-colors"
+                >
+                  <HelpCircle className="h-3.5 w-3.5" strokeWidth={1.5} /> What gets calculated?
+                </button>
               </div>
             </Card>
           )}

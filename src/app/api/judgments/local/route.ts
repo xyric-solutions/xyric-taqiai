@@ -9,6 +9,38 @@ import {
 } from "@/lib/judgment-db-runtime";
 import { getCurrentUser } from "@/lib/auth";
 
+// A query is treated as a legal-section lookup ONLY when it genuinely looks like a
+// section reference — an explicit "section/sec/u/s 302", or a bare section token
+// optionally followed by a statute name ("302", "489-F", "497 CrPC", "302 PPC").
+// A stray number inside a keyword search (a year like 2021, a quantity, a case
+// number) must NOT hijack the query into section mode — that was returning
+// judgments that merely contained the number instead of matching the keywords.
+function isSectionQuery(q: string): boolean {
+  const s = q.trim();
+  if (!s) return false;
+  // explicit section reference: "section 302", "sec. 420", "u/s 497", "s. 302"
+  if (/\b(?:section|sec|u\/s|under\s+section)\b\s*\.?\s*\d{1,4}[-\s]?[a-z]?\b/i.test(s)) return true;
+  if (/\bs\.\s*\d{1,4}[-\s]?[a-z]?\b/i.test(s)) return true;
+  // bare section token, optionally with a statute name
+  if (/^\d{1,4}\s*[-/]?\s*[a-z]?(?:\s+(?:ppc|crpc|cpc|cr\.?\s*p\.?\s*c|c\.?\s*p\.?\s*c|p\.?\s*p\.?\s*c|qso|qanun[-\s]?e[-\s]?shahadat|constitution|art(?:icle)?))?\s*$/i.test(s)) {
+    // a bare 4-digit year is not a section
+    if (/^\d{4}$/.test(s) && Number(s) >= 1800 && Number(s) <= 2099) return false;
+    return true;
+  }
+  return false;
+}
+
+// A query the user clearly meant as a REPORTED CITATION (not a keyword search):
+// a law-report token (SCMR/PLD/…) or a "<year> <CODE> <number>" style reference
+// like "2020-LHR-541" or "PLD 2019 SC 304". Used so that, when no such judgment
+// exists, we tell the user honestly instead of dumping every same-year judgment.
+function looksLikeCitationQuery(q: string): boolean {
+  const s = q.trim();
+  if (/\b(?:SCMR|PLD|PCrLJ|PCRLJ|MLD|CLC|YLR|PLJ|NLR|SBLR|CLD|GBLR|KLR)\b/i.test(s)) return true;
+  if (/\b(?:19|20)\d{2}\b[\s-]+[A-Za-z]{2,5}[\s-]+\d{1,5}\b/.test(s)) return true;
+  return false;
+}
+
 export async function GET(req: NextRequest) {
   const session = await getCurrentUser();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -48,7 +80,7 @@ export async function GET(req: NextRequest) {
     }
     return enriched;
   };
-  const sectionMode = /\b\d{2,4}\s*[-/]?\s*[A-Za-z]?\b/.test(query);
+  const sectionMode = isSectionQuery(query);
 
   if (sectionMode && !relatedMode) {
     const found = await searchSectionJudgments(query, court, year, PAGE_SIZE + 1, offset, reportedOnly);
@@ -71,7 +103,7 @@ export async function GET(req: NextRequest) {
     const hasMore = rel.length > PAGE_SIZE;
     const total = hasMore ? offset + PAGE_SIZE + 1 : offset + rel.length;
     return NextResponse.json({
-      results: await withCitedBy(rel.slice(0, PAGE_SIZE)), related: true, hasMore, page, total, totalPages: page + (hasMore ? 1 : 0), stats: await getJudgmentDbStats(),
+      results: await withCitedBy(rel.slice(0, PAGE_SIZE)), related: true, citationNotFound: looksLikeCitationQuery(query), hasMore, page, total, totalPages: page + (hasMore ? 1 : 0), stats: await getJudgmentDbStats(),
     });
   }
 
@@ -83,7 +115,7 @@ export async function GET(req: NextRequest) {
     const hasMore = rel.length > PAGE_SIZE;
     const total = hasMore ? offset + PAGE_SIZE + 1 : offset + rel.length;
     return NextResponse.json({
-      results: await withCitedBy(rel.slice(0, PAGE_SIZE)), related: true, hasMore, page, total, totalPages: page + (hasMore ? 1 : 0), stats: await getJudgmentDbStats(),
+      results: await withCitedBy(rel.slice(0, PAGE_SIZE)), related: true, citationNotFound: looksLikeCitationQuery(query), hasMore, page, total, totalPages: page + (hasMore ? 1 : 0), stats: await getJudgmentDbStats(),
     });
   }
 

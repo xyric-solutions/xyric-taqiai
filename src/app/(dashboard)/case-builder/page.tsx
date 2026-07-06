@@ -14,7 +14,7 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type Stage = "input" | "researching" | "results" | "asking" | "generating" | "done";
+type Stage = "input" | "confirm" | "intake" | "parties" | "researching" | "results" | "asking" | "generating" | "done";
 
 interface PreparedJudgment {
   id: number;
@@ -99,6 +99,37 @@ function Dots() {
   );
 }
 
+const WIZARD_STEPS = ["Case", "Confirm", "Details", "Parties"];
+
+// Compact 4-step progress indicator shown across the guided input flow.
+function Stepper({ current }: { current: number }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      {WIZARD_STEPS.map((label, i) => {
+        const n = i + 1;
+        const active = n === current;
+        const done = n < current;
+        return (
+          <div key={label} className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <span
+                className="h-5 w-5 rounded-full grid place-items-center text-[10px] font-bold"
+                style={done || active
+                  ? { background: "rgba(6,182,212,0.15)", color: "#06b6d4", border: "1px solid rgba(6,182,212,0.3)" }
+                  : { background: "var(--bg-surface-2)", color: "var(--text-tertiary)", border: "1px solid var(--border-subtle)" }}
+              >
+                {done ? "✓" : n}
+              </span>
+              <span className="text-xs font-medium hidden sm:inline" style={{ color: active ? "var(--text-primary)" : "var(--text-tertiary)" }}>{label}</span>
+            </div>
+            {n < WIZARD_STEPS.length && <ChevronRight className="h-3 w-3" style={{ color: "var(--text-tertiary)" }} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 function fieldLabel(id: string) {
@@ -157,6 +188,14 @@ export default function CaseBuilderPage() {
   const [districtName, setDistrictName] = useState("");
   const [court, setCourt] = useState("All Courts");
   const [language, setLanguage] = useState("en");
+
+  // Section intake — confirm what the section is about, then ask section-specific facts
+  const [intakeLoading, setIntakeLoading] = useState(false);
+  const [sectionInterpretation, setSectionInterpretation] = useState("");
+  const [sectionAlternatives, setSectionAlternatives] = useState<string[]>([]);
+  const [sectionPurpose, setSectionPurpose] = useState("");
+  const [intakeQuestions, setIntakeQuestions] = useState<Question[]>([]);
+  const [intakeAnswers, setIntakeAnswers] = useState<Record<string, string>>({});
 
   // Research results
   const [result, setResult] = useState<ResearchResult | null>(null);
@@ -217,6 +256,73 @@ export default function CaseBuilderPage() {
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
+  // Fold the confirmed section purpose + section-specific intake answers into the
+  // facts, so both research and drafting see the concrete case details.
+  const composeFacts = () => {
+    const parts: string[] = [];
+    if (facts.trim()) parts.push(facts.trim());
+    if (sectionPurpose.trim()) parts.push(`Nature of the matter: ${sectionPurpose.trim()}`);
+    const qa = intakeQuestions
+      .map((q) => { const v = intakeAnswers[q.id]?.trim(); return v ? `${q.label}: ${v}` : null; })
+      .filter(Boolean) as string[];
+    if (qa.length) parts.push(qa.join("\n"));
+    return parts.join("\n");
+  };
+
+  // Step 0a: user clicked "Research" — first confirm what the section is about.
+  const handleStartIntake = async () => {
+    if (!sections.trim()) { setError("Please enter the law section(s) or case type."); return; }
+    setError(null);
+    setIntakeLoading(true);
+    try {
+      const res = await fetch("/api/ai/section-intake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "interpret", sections, documentNeeded, language }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not read the section");
+      setSectionInterpretation(data.interpretation || "");
+      setSectionAlternatives(Array.isArray(data.alternatives) ? data.alternatives : []);
+      setSectionPurpose(data.interpretation || sections);
+      setStage("confirm");
+    } catch {
+      // If interpretation fails, don't block the lawyer — skip the AI steps and
+      // let them fill party/court details, then research.
+      setStage("parties");
+    } finally {
+      setIntakeLoading(false);
+    }
+  };
+
+  // Step 0b: user confirmed the purpose — fetch section-specific questions.
+  const handleConfirmPurpose = async () => {
+    setError(null);
+    setIntakeLoading(true);
+    try {
+      const res = await fetch("/api/ai/section-intake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "questions", sections, documentNeeded, purpose: sectionPurpose, facts, language }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not build questions");
+      const qs: Question[] = Array.isArray(data.questions) ? data.questions : [];
+      if (qs.length === 0) {
+        // Nothing case-specific to ask — move on to party/court details.
+        setStage("parties");
+        return;
+      }
+      setIntakeQuestions(qs);
+      setIntakeAnswers({});
+      setStage("intake");
+    } catch {
+      setStage("parties");
+    } finally {
+      setIntakeLoading(false);
+    }
+  };
+
   const handleResearch = async () => {
     if (!sections.trim()) { setError("Please enter the law section(s) or case type."); return; }
     setError(null);
@@ -229,7 +335,7 @@ export default function CaseBuilderPage() {
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          sections, facts, documentNeeded, clientName, clientFatherName, clientCnic, clientAddress,
+          sections, facts: composeFacts(), documentNeeded, clientName, clientFatherName, clientCnic, clientAddress,
           opponentName, opponentFatherName, opponentCnic, opponentAddress, firNo, policeStation, courtName, districtName, court, year: "All years",
         }),
       });
@@ -399,7 +505,7 @@ export default function CaseBuilderPage() {
       policeStation && `Police Station: ${policeStation}`,
       courtName && `Court Name for document heading: ${courtName}`,
       districtName && `District/City for document heading: ${districtName}`,
-      facts && `Case Facts: ${facts}`,
+      composeFacts() && `Case Facts: ${composeFacts()}`,
     ].filter(Boolean).join("\n");
 
     const richRequest = `${docRequest}
@@ -508,7 +614,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
       policeStation && `Police Station: ${policeStation}`,
       courtName && `Court Name for document heading: ${courtName}`,
       districtName && `District/City for document heading: ${districtName}`,
-      facts && `Case Facts: ${facts}`,
+      composeFacts() && `Case Facts: ${composeFacts()}`,
     ].filter(Boolean).join("\n");
 
     const richRequest = `${docRequest}
@@ -571,6 +677,12 @@ Client Position: ${result.searchTerms.clientPosition}`;
     setCourtName("");
     setDistrictName("");
     setCourt("All Courts");
+    setIntakeLoading(false);
+    setSectionInterpretation("");
+    setSectionAlternatives([]);
+    setSectionPurpose("");
+    setIntakeQuestions([]);
+    setIntakeAnswers({});
     setDocumentType("");
     setQuestions([]);
     setAnswers({});
@@ -994,9 +1106,319 @@ Client Position: ${result.searchTerms.clientPosition}`;
     );
   }
 
-  // Input stage (default)
+  // Confirm: what is this section about?
+  if (stage === "confirm") {
+    return (
+      <div className="max-w-2xl mx-auto space-y-6">
+        <Stepper current={2} />
+        <div className="flex items-center gap-3">
+          <button onClick={() => setStage("input")} style={{ color: "var(--text-tertiary)" }}>
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <div>
+            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Confirm the Matter</h1>
+            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Confirm what this section is about so the right questions are asked.</p>
+          </div>
+        </div>
+
+        {error && (
+          <div className="rounded-lg px-4 py-3 text-sm" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+            {error}
+          </div>
+        )}
+
+        <Card className="p-6 space-y-5">
+          <div className="flex items-start gap-3">
+            <div className="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: "rgba(6,182,212,0.15)" }}>
+              <Scale className="h-4 w-4" style={{ color: "#06b6d4" }} />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>You entered</p>
+              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{sections}</p>
+            </div>
+          </div>
+
+          {sectionInterpretation && (
+            <div className="rounded-lg px-4 py-3 text-sm" style={{ background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.2)", color: "var(--text-secondary)" }}>
+              <span className="font-semibold" style={{ color: "var(--text-primary)" }}>AI understands: </span>{sectionInterpretation}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <label className="block text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+              What is this case about? <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(edit if the AI got it wrong)</span>
+            </label>
+            <textarea
+              rows={2}
+              value={sectionPurpose}
+              onChange={(e) => setSectionPurpose(e.target.value)}
+              placeholder="e.g. Theft of my client's car"
+              className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+              style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+            />
+          </div>
+
+          {sectionAlternatives.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Or pick one</p>
+              <div className="flex flex-wrap gap-2">
+                {sectionAlternatives.map((alt) => (
+                  <button
+                    key={alt}
+                    type="button"
+                    onClick={() => setSectionPurpose(alt)}
+                    className="px-2.5 py-1 rounded-full text-xs font-medium transition-colors"
+                    style={sectionPurpose === alt
+                      ? { background: "rgba(6,182,212,0.15)", color: "#06b6d4", border: "1px solid rgba(6,182,212,0.3)" }
+                      : { background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-subtle)" }}
+                  >
+                    {alt}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <Button onClick={handleConfirmPurpose} disabled={intakeLoading || !sectionPurpose.trim()} className="w-full flex items-center justify-center gap-2">
+            <Sparkles className="h-4 w-4" />
+            {intakeLoading ? "Preparing questions…" : "Yes, ask the related questions"}
+          </Button>
+          <button
+            type="button"
+            onClick={() => void handleResearch()}
+            disabled={intakeLoading}
+            className="w-full text-center text-xs font-medium"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            Skip and research directly
+          </button>
+        </Card>
+      </div>
+    );
+  }
+
+  // Intake: section-specific fact questions
+  if (stage === "intake") {
+    return (
+      <div className="max-w-2xl mx-auto space-y-6">
+        <Stepper current={3} />
+        <div className="flex items-center gap-3">
+          <button onClick={() => setStage("confirm")} style={{ color: "var(--text-tertiary)" }}>
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <div>
+            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Case Details</h1>
+            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+              {intakeQuestions.length} question{intakeQuestions.length !== 1 ? "s" : ""} specific to this matter — fill what you know.
+            </p>
+          </div>
+        </div>
+
+        {sectionPurpose.trim() && (
+          <div className="rounded-lg px-4 py-3 text-sm" style={{ background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.2)", color: "var(--text-secondary)" }}>
+            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>Matter: </span>{sectionPurpose}
+          </div>
+        )}
+
+        {error && (
+          <div className="rounded-lg px-4 py-3 text-sm" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+            {error}
+          </div>
+        )}
+
+        <Card className="p-6 space-y-5">
+          {intakeQuestions.map((q) => (
+            <div key={q.id} className="space-y-1.5">
+              <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+                {q.label}
+                {q.required && <span style={{ color: "#ef4444" }}> *</span>}
+                {!q.required && <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}> (optional)</span>}
+              </label>
+              {/\b(fact|detail|description|reason|ground|circumstance)\b/i.test(q.id + " " + q.label) ? (
+                <textarea
+                  rows={3}
+                  value={intakeAnswers[q.id] || ""}
+                  onChange={(e) => setIntakeAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
+                  placeholder={q.placeholder}
+                  className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={intakeAnswers[q.id] || ""}
+                  onChange={(e) => setIntakeAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
+                  placeholder={q.placeholder}
+                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+                />
+              )}
+            </div>
+          ))}
+
+          <Button onClick={() => setStage("parties")} className="w-full flex items-center justify-center gap-2">
+            Continue
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+          <button
+            type="button"
+            onClick={() => void handleResearch()}
+            className="w-full text-center text-xs font-medium"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            Skip remaining and research now
+          </button>
+        </Card>
+      </div>
+    );
+  }
+
+  // Parties & court heading details (step 4)
+  if (stage === "parties") {
+    return (
+      <div className="max-w-2xl mx-auto space-y-6">
+        <Stepper current={4} />
+        <div className="flex items-center gap-3">
+          <button onClick={() => setStage(intakeQuestions.length > 0 ? "intake" : "confirm")} style={{ color: "var(--text-tertiary)" }}>
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <div>
+            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Parties &amp; Court</h1>
+            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>All optional — blank fields become ___ in the draft. Fill what you know.</p>
+          </div>
+        </div>
+
+        {error && (
+          <div className="rounded-lg px-4 py-3 text-sm" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+            {error}
+          </div>
+        )}
+
+        <Card className="p-6 space-y-6">
+          {/* Court & case number */}
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Court &amp; Case No.</p>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>FIR / Case No.</label>
+                  <input type="text" value={firNo} onChange={(e) => setFirNo(e.target.value)} placeholder="e.g. 123/2024 or Crl. A. 45/2023" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Police Station</label>
+                  <input type="text" value={policeStation} onChange={(e) => setPoliceStation(e.target.value)} placeholder="e.g. PS City, Faisalabad" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Court Name <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(for heading)</span></label>
+                  <input type="text" value={courtName} onChange={(e) => setCourtName(e.target.value)} placeholder="e.g. Court of Sessions Judge" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>District / City <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(for heading)</span></label>
+                  <input type="text" value={districtName} onChange={(e) => setDistrictName(e.target.value)} placeholder="e.g. Faisalabad / Multan / Sahiwal" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Parties */}
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Parties</p>
+            <div className="space-y-3">
+              <div className="grid gap-3 md:grid-cols-2">
+                <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Client / Petitioner / Accused</p>
+                <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Opponent / Respondent / Complainant</p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Name</label>
+                  <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="e.g. Muhammad Aslam" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Name</label>
+                  <input type="text" value={opponentName} onChange={(e) => setOpponentName(e.target.value)} placeholder="e.g. State / Tariq Mehmood" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Father Name</label>
+                  <input type="text" value={clientFatherName} onChange={(e) => setClientFatherName(e.target.value)} placeholder="e.g. Muhammad Ali" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Father Name</label>
+                  <input type="text" value={opponentFatherName} onChange={(e) => setOpponentFatherName(e.target.value)} placeholder="e.g. Muhammad Yousaf" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>CNIC</label>
+                  <input type="text" value={clientCnic} onChange={(e) => setClientCnic(e.target.value)} placeholder="e.g. 35201-1234567-1" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>CNIC</label>
+                  <input type="text" value={opponentCnic} onChange={(e) => setOpponentCnic(e.target.value)} placeholder="e.g. 35202-1234567-1" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Address</label>
+                  <input type="text" value={clientAddress} onChange={(e) => setClientAddress(e.target.value)} placeholder="e.g. House 12, Civil Lines, Faisalabad" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Address</label>
+                  <input type="text" value={opponentAddress} onChange={(e) => setOpponentAddress(e.target.value)} placeholder="e.g. House 20, Cantt Road, Multan" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Background + search scope */}
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Background</p>
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Case background / additional facts <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span></label>
+                <textarea
+                  rows={3}
+                  value={facts}
+                  onChange={(e) => setFacts(e.target.value)}
+                  placeholder={`Anything not already covered above:\n• What happened and when\n• Important documents or dates\n• Your side's main grounds and the relief you want`}
+                  className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Search Judgments From</label>
+                <select
+                  value={court}
+                  onChange={(e) => setCourt(e.target.value)}
+                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none"
+                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}
+                >
+                  {COURTS.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => void handleResearch()}
+            className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all"
+            style={{ background: "linear-gradient(135deg, #06b6d4, #7c3aed)", color: "white", boxShadow: "0 0 20px rgba(6,182,212,0.3)" }}
+          >
+            <Search className="h-4 w-4" />
+            Research Judgments &amp; Build Case
+          </button>
+        </Card>
+      </div>
+    );
+  }
+
+  // Input stage (default) — step 1: what's the case about?
   return (
     <div className="max-w-2xl mx-auto space-y-6">
+      <Stepper current={1} />
       {/* Page header */}
       <div className="space-y-1">
         <div className="flex items-center gap-2.5">
@@ -1005,21 +1427,55 @@ Client Position: ${result.searchTerms.clientPosition}`;
           </div>
           <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>Case Builder</h1>
           {/* Reveal the "How It Works" helper on demand — keeps the form clean */}
-          <button
-            onClick={() => setShowHelp((v) => !v)}
-            title="How It Works"
-            aria-label="How It Works"
-            className={`ml-auto grid place-items-center h-8 w-8 rounded-lg border transition-all ${
-              showHelp
-                ? "bg-primary-500/15 border-primary-500/40 text-primary-300"
-                : "border-[var(--border-default)] bg-[var(--bg-surface-2)] text-[var(--text-tertiary)] hover:text-primary-400 hover:border-primary-500/40"
-            }`}
-          >
-            <HelpCircle className="h-4 w-4" />
-          </button>
+          <div className="relative ml-auto">
+            <button
+              onClick={() => setShowHelp((v) => !v)}
+              title="How It Works"
+              aria-label="How It Works"
+              className={`grid place-items-center h-8 w-8 rounded-lg border transition-all ${
+                showHelp
+                  ? "bg-primary-500/15 border-primary-500/40 text-primary-300"
+                  : "border-[var(--border-default)] bg-[var(--bg-surface-2)] text-[var(--text-tertiary)] hover:text-primary-400 hover:border-primary-500/40"
+              }`}
+            >
+              <HelpCircle className="h-4 w-4" />
+            </button>
+
+            {showHelp && (
+              <>
+                {/* click-outside backdrop */}
+                <div className="fixed inset-0 z-10" onClick={() => setShowHelp(false)} />
+                <div
+                  className="absolute right-0 top-full mt-2 w-72 z-20 rounded-xl p-4 space-y-3"
+                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", boxShadow: "0 12px 32px rgba(0,0,0,0.5)" }}
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>How It Works</p>
+                    <button onClick={() => setShowHelp(false)} title="Close" aria-label="Close" className="grid place-items-center h-6 w-6 rounded-lg transition-colors hover:bg-[var(--bg-surface-1)]">
+                      <X className="h-3.5 w-3.5" style={{ color: "var(--text-tertiary)" }} />
+                    </button>
+                  </div>
+                  <div className="space-y-2.5">
+                    {[
+                      { icon: Search, text: "AI extracts keywords and searches all Pakistani judgments" },
+                      { icon: Scale, text: "Selects the 5 most relevant judgments with favorable/adverse analysis" },
+                      { icon: FileText, text: "Drafts your document using the research without adding blanket reliance lines" },
+                    ].map(({ icon: Icon, text }, i) => (
+                      <div key={i} className="flex items-start gap-3">
+                        <div className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "rgba(6,182,212,0.1)" }}>
+                          <Icon className="h-3.5 w-3.5" style={{ color: "#06b6d4" }} />
+                        </div>
+                        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{text}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
         <p className="text-sm pl-0.5" style={{ color: "var(--text-secondary)" }}>
-          Enter your case details — AI will find relevant judgments and draft your document.
+          Start with your case — AI will guide you step by step, find relevant judgments, and draft your document.
         </p>
       </div>
 
@@ -1032,265 +1488,68 @@ Client Position: ${result.searchTerms.clientPosition}`;
 
       <Card className="p-6 space-y-6">
 
-        {/* ── Section A: Case Identification ── */}
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Case Identification</p>
-          <div className="space-y-4">
+        {/* ── Law sections / case type ── */}
+        <div className="space-y-1.5">
+          <label className="block text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+            Law Section(s) / Case Type <span style={{ color: "#ef4444" }}>*</span>
+          </label>
+          <input
+            type="text"
+            value={sections}
+            onChange={(e) => setSections(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && sections.trim() && !intakeLoading) void handleStartIntake(); }}
+            placeholder="e.g. 489-F PPC / 497 CrPC / custody / maintenance / car theft"
+            className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+            style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+          />
+          <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>Use sections with law name, or a short case type if the section is not known.</p>
+        </div>
 
-            {/* Law sections / case type */}
-            <div className="space-y-1.5">
-              <label className="block text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                Law Section(s) / Case Type <span style={{ color: "#ef4444" }}>*</span>
-              </label>
-              <input
-                type="text"
-                value={sections}
-                onChange={(e) => setSections(e.target.value)}
-                placeholder="e.g. 489-F PPC / 497 CrPC / custody / maintenance"
-                className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-              />
-              <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>Use sections with law name, or a short case type if section is not known.</p>
-            </div>
+        {/* ── Document needed ── */}
+        <div className="space-y-1.5">
+          <label className="block text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+            Document Needed <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span>
+          </label>
+          <input
+            type="text"
+            value={documentNeeded}
+            onChange={(e) => setDocumentNeeded(e.target.value)}
+            placeholder="e.g. Bail Application, Written Statement, Writ Petition, Legal Notice, Appeal"
+            list="doc-types"
+            className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+            style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+          />
+          <datalist id="doc-types">
+            {DOCUMENT_TYPES.map((d) => <option key={d} value={d} />)}
+          </datalist>
+          <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>What you want to prepare — you can change this later.</p>
+        </div>
 
-            {/* FIR No + Police Station */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>FIR / Case No. <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span></label>
-                <input
-                  type="text"
-                  value={firNo}
-                  onChange={(e) => setFirNo(e.target.value)}
-                  placeholder="e.g. 123/2024 or Crl. A. 45/2023"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Police Station <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span></label>
-                <input
-                  type="text"
-                  value={policeStation}
-                  onChange={(e) => setPoliceStation(e.target.value)}
-                  placeholder="e.g. PS City, Faisalabad"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Court Name <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(for heading)</span></label>
-                <input
-                  type="text"
-                  value={courtName}
-                  onChange={(e) => setCourtName(e.target.value)}
-                  placeholder="e.g. Court of Sessions Judge"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>District / City <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(for heading)</span></label>
-                <input
-                  type="text"
-                  value={districtName}
-                  onChange={(e) => setDistrictName(e.target.value)}
-                  placeholder="e.g. Faisalabad / Multan / Sahiwal"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-            </div>
+        {/* ── Draft language ── */}
+        <div className="space-y-1.5">
+          <label className="block text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Draft Language</label>
+          <div className="flex gap-2 pt-0.5">
+            <button
+              onClick={() => setLanguage("en")}
+              className="flex-1 py-2 rounded-lg text-sm font-medium transition-colors"
+              style={language === "en" ? { background: "rgba(6,182,212,0.15)", color: "#06b6d4", border: "1px solid rgba(6,182,212,0.3)" } : { background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-default)" }}
+            >
+              English
+            </button>
+            <button
+              onClick={() => setLanguage("ur")}
+              className="flex-1 py-2 rounded-lg text-sm font-medium transition-colors"
+              style={language === "ur" ? { background: "rgba(6,182,212,0.15)", color: "#06b6d4", border: "1px solid rgba(6,182,212,0.3)" } : { background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-default)" }}
+            >
+              اردو
+            </button>
           </div>
         </div>
 
-        {/* ── Section B: Parties ── */}
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Parties <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span></p>
-          <div className="space-y-3">
-            <div className="grid gap-3 md:grid-cols-2">
-              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Client / Petitioner / Accused</p>
-              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Opponent / Respondent / Complainant</p>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Name</label>
-                <input
-                  type="text"
-                  value={clientName}
-                  onChange={(e) => setClientName(e.target.value)}
-                  placeholder="e.g. Muhammad Aslam"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Name</label>
-                <input
-                  type="text"
-                  value={opponentName}
-                  onChange={(e) => setOpponentName(e.target.value)}
-                  placeholder="e.g. State / Tariq Mehmood"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Father Name</label>
-                <input
-                  type="text"
-                  value={clientFatherName}
-                  onChange={(e) => setClientFatherName(e.target.value)}
-                  placeholder="e.g. Muhammad Ali"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Father Name</label>
-                <input
-                  type="text"
-                  value={opponentFatherName}
-                  onChange={(e) => setOpponentFatherName(e.target.value)}
-                  placeholder="e.g. Muhammad Yousaf"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>CNIC</label>
-                <input
-                  type="text"
-                  value={clientCnic}
-                  onChange={(e) => setClientCnic(e.target.value)}
-                  placeholder="e.g. 35201-1234567-1"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>CNIC</label>
-                <input
-                  type="text"
-                  value={opponentCnic}
-                  onChange={(e) => setOpponentCnic(e.target.value)}
-                  placeholder="e.g. 35202-1234567-1"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Address</label>
-                <input
-                  type="text"
-                  value={clientAddress}
-                  onChange={(e) => setClientAddress(e.target.value)}
-                  placeholder="e.g. House 12, Civil Lines, Faisalabad"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Address</label>
-                <input
-                  type="text"
-                  value={opponentAddress}
-                  onChange={(e) => setOpponentAddress(e.target.value)}
-                  placeholder="e.g. House 20, Cantt Road, Multan"
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Section C: Case Details ── */}
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Case Details</p>
-          <div className="space-y-4">
-
-            {/* Case facts */}
-            <div className="space-y-1.5">
-              <label className="block text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                Case Facts <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(optional — blank fields will appear as ___ in draft)</span>
-              </label>
-              <textarea
-                rows={4}
-                value={facts}
-                onChange={(e) => setFacts(e.target.value)}
-                placeholder={`Include the facts you know:\n• What happened and when\n• Parties involved\n• FIR/case/order details, if any\n• Important documents or dates\n• Your side's main grounds\n• Relief you want from the court`}
-                className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-              />
-              <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>More detail = better judgment matching and stronger draft</p>
-            </div>
-
-            {/* Document type */}
-            <div className="space-y-1.5">
-              <label className="block text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Document Needed</label>
-              <input
-                type="text"
-                value={documentNeeded}
-                onChange={(e) => setDocumentNeeded(e.target.value)}
-                placeholder="e.g. Bail Application, Written Statement, Writ Petition, Legal Notice, Appeal"
-                list="doc-types"
-                className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-              />
-              <datalist id="doc-types">
-                {DOCUMENT_TYPES.map((d) => <option key={d} value={d} />)}
-              </datalist>
-            </div>
-
-            {/* Court filter + Language */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="block text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Search Judgments From</label>
-                <select
-                  value={court}
-                  onChange={(e) => setCourt(e.target.value)}
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-secondary)" }}
-                >
-                  {COURTS.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Draft Language</label>
-                <div className="flex gap-2 pt-0.5">
-                  <button
-                    onClick={() => setLanguage("en")}
-                    className="flex-1 py-2 rounded-lg text-sm font-medium transition-colors"
-                    style={language === "en" ? { background: "rgba(6,182,212,0.15)", color: "#06b6d4", border: "1px solid rgba(6,182,212,0.3)" } : { background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-default)" }}
-                  >
-                    English
-                  </button>
-                  <button
-                    onClick={() => setLanguage("ur")}
-                    className="flex-1 py-2 rounded-lg text-sm font-medium transition-colors"
-                    style={language === "ur" ? { background: "rgba(6,182,212,0.15)", color: "#06b6d4", border: "1px solid rgba(6,182,212,0.3)" } : { background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-default)" }}
-                  >
-                    اردو
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Submit */}
+        {/* Continue */}
         <button
-          onClick={handleResearch}
-          disabled={!sections.trim()}
+          onClick={handleStartIntake}
+          disabled={!sections.trim() || intakeLoading}
           className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
           style={{
             background: "linear-gradient(135deg, #06b6d4, #7c3aed)",
@@ -1298,41 +1557,10 @@ Client Position: ${result.searchTerms.clientPosition}`;
             boxShadow: sections.trim() ? "0 0 20px rgba(6,182,212,0.3)" : "none",
           }}
         >
-          <Sparkles className="h-4 w-4" />
-          Research Judgments & Build Case
+          {intakeLoading ? "Reading section…" : "Continue"}
+          {!intakeLoading && <ChevronRight className="h-4 w-4" />}
         </button>
       </Card>
-
-      {/* How it works — revealed on demand via the "?" button */}
-      {showHelp && (
-        <Card className="p-4" style={{ background: "var(--bg-surface-1)", borderColor: "var(--border-subtle)" }}>
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>How It Works</p>
-            <button
-              onClick={() => setShowHelp(false)}
-              title="Close"
-              aria-label="Close"
-              className="grid place-items-center h-6 w-6 rounded-lg transition-colors hover:bg-[var(--bg-surface-2)]"
-            >
-              <X className="h-3.5 w-3.5" style={{ color: "var(--text-tertiary)" }} />
-            </button>
-          </div>
-          <div className="space-y-2.5">
-            {[
-              { icon: Search, text: "AI extracts keywords and searches all Pakistani judgments" },
-              { icon: Scale, text: "Selects the 5 most relevant judgments with favorable/adverse analysis" },
-              { icon: FileText, text: "Drafts your document using the research without adding blanket reliance lines" },
-            ].map(({ icon: Icon, text }, i) => (
-              <div key={i} className="flex items-start gap-3">
-                <div className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "rgba(6,182,212,0.1)" }}>
-                  <Icon className="h-3.5 w-3.5" style={{ color: "#06b6d4" }} />
-                </div>
-                <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{text}</p>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
     </div>
   );
 }

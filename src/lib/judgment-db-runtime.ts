@@ -55,11 +55,6 @@ function cleanSearchTerm(value: string): string {
     .trim();
 }
 
-function phraseExpr(query: string): string | null {
-  const cleaned = cleanSearchTerm(query);
-  return cleaned.length >= 2 ? `"${cleaned}"` : null;
-}
-
 function anyExpr(terms: string[]): string | null {
   const parts = terms
     .map(cleanSearchTerm)
@@ -216,10 +211,24 @@ function sectionVariants(query: string): string[] {
   );
 }
 
+// Reporter / court abbreviations that carry no content meaning — dropping them
+// from the keyword-fallback keeps "related" matching on real legal terms instead
+// of on a year or a citation code (which would flood every same-year judgment).
+const CITATION_NOISE = new Set([
+  "scmr", "pld", "pcrlj", "mld", "clc", "ylr", "plj", "nlr", "sblr", "cld", "gblr",
+  "klr", "lhr", "lhc", "khi", "hyd", "isb", "pesh", "scp", "shc", "fsc", "ihc",
+]);
+
+function isYearToken(term: string): boolean {
+  return /^\d{4}$/.test(term) && Number(term) >= 1800 && Number(term) <= 2099;
+}
+
 function queryTerms(query: string): string[] {
   return query
     .split(/[^A-Za-z0-9]+/)
-    .filter((term) => term.length >= 4)
+    // Real keywords only: drop short tokens, bare numbers (years, citation page
+    // numbers), and reporter/court codes — none are content keywords.
+    .filter((term) => term.length >= 4 && !/^\d+$/.test(term) && !isYearToken(term) && !CITATION_NOISE.has(term.toLowerCase()))
     .slice(0, 6);
 }
 
@@ -250,7 +259,11 @@ async function searchPg(
   related: boolean
 ): Promise<JudgmentSearchResult[] | null> {
   try {
-    const expr = related ? anyExpr(queryTerms(query)) : phraseExpr(query);
+    const cleaned = cleanSearchTerm(query);
+    // Primary (non-related): AND of every term — websearch_to_tsquery ANDs
+    // unquoted words, so a result must contain ALL the searched keywords, not
+    // just one. Related fallback: OR of the significant terms (broadest net).
+    const expr = related ? anyExpr(queryTerms(query)) : (cleaned.length >= 2 ? cleaned : null);
     if (!expr) return [];
 
     // Inline the tsquery instead of a `WITH q … CROSS JOIN q` CTE. The CTE form
@@ -271,6 +284,15 @@ async function searchPg(
       matchSql = `(${matchSql} OR j.citation ILIKE $${params.length} OR j.real_citation ILIKE $${params.length})`;
     }
     where.push(matchSql);
+
+    // Relevance ordering: float exact-phrase matches to the very top, then rank
+    // by how well the keywords match, before the quality/court tie-breakers.
+    let phraseBoost = "";
+    if (!related && sort === "relevance" && cleaned.length >= 2) {
+      params.push(`"${cleaned}"`);
+      phraseBoost = `(${textVectorSql("j")} @@ websearch_to_tsquery('simple', $${params.length})) DESC, `;
+    }
+
     params.push(Math.min(350, Math.max(limit + offset + 25, (offset + limit) * 2)));
 
     const rows = await prisma.$queryRawUnsafe<any[]>(
@@ -280,7 +302,7 @@ async function searchPg(
                ts_rank_cd(${textVectorSql("j")}, ${tsq}) AS rank
         FROM legal_judgments j
         WHERE ${where.join(" AND ")}
-        ORDER BY ${orderBy(sort, "j", "rank")}
+        ORDER BY ${phraseBoost}${orderBy(sort, "j", "rank")}
         LIMIT $${params.length}
       `,
       ...params
@@ -373,7 +395,8 @@ async function countPg(
   related: boolean
 ): Promise<number | null> {
   try {
-    const expr = related ? anyExpr(queryTerms(query)) : phraseExpr(query);
+    const cleaned = cleanSearchTerm(query);
+    const expr = related ? anyExpr(queryTerms(query)) : (cleaned.length >= 2 ? cleaned : null);
     if (!expr) return 0;
 
     // Inline the tsquery so the GIN index is used (see searchPg for details).

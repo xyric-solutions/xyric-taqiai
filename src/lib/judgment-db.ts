@@ -97,6 +97,37 @@ function looksLikeCitation(query: string): boolean {
   return CITATION_RE.test(query);
 }
 
+/** Every significant token quoted and AND-joined — a result must contain them
+ *  all (FTS5 default is AND, but we make it explicit for clarity). This replaces
+ *  the old whole-query phrase match, which required the words to be adjacent and
+ *  so failed on most real searches, dropping to the loose any-term fallback. */
+function ftsAllOf(query: string): string | null {
+  const parts = cleanFtsTerm(query)
+    .split(/\s+/)
+    .filter((t) => t.length >= 2)
+    .map((t) => `"${t}"`);
+  return parts.length ? parts.join(" AND ") : null;
+}
+
+// Reporter / court abbreviations carry no content meaning — dropped from the
+// keyword fallback so "related" matches real legal terms, not a year or code.
+const CITATION_NOISE = new Set([
+  "scmr", "pld", "pcrlj", "mld", "clc", "ylr", "plj", "nlr", "sblr", "cld", "gblr",
+  "klr", "lhr", "lhc", "khi", "hyd", "isb", "pesh", "scp", "shc", "fsc", "ihc",
+]);
+function isYearToken(t: string): boolean {
+  return /^\d{4}$/.test(t) && Number(t) >= 1800 && Number(t) <= 2099;
+}
+/** Significant keyword tokens for the related-judgment fallback. */
+function relatedTerms(query: string): string[] {
+  return query
+    .split(/[^A-Za-z0-9]+/)
+    // Real keywords only: drop short tokens, bare numbers (years, citation page
+    // numbers), and reporter/court codes — none are content keywords.
+    .filter((t) => t.length >= 4 && !/^\d+$/.test(t) && !isYearToken(t) && !CITATION_NOISE.has(t.toLowerCase()))
+    .slice(0, 6);
+}
+
 /** Each term quoted and OR-joined — mirrors the old `content LIKE ? OR ...`. */
 function ftsAnyOf(terms: string[]): string | null {
   const parts = terms
@@ -281,21 +312,23 @@ export function searchLocalJudgments(
     const db = getDb();
     if (!db || !query.trim()) return [];
 
-    const phrase = hasFts(db) ? ftsPhrase(query) : null;
+    // AND of every keyword: the result must contain them all, not merely be
+    // adjacent (the old phrase match) or share a single word (the loose fallback).
+    const matchExpr = hasFts(db) ? ftsAllOf(query) : null;
     const params: (string | number)[] = [];
     let where: string;
-    if (phrase && !looksLikeCitation(query)) {
+    if (matchExpr && !looksLikeCitation(query)) {
       // common case: plain text search — pure FTS, no full-scan citation OR
       where = `(processed = 1 AND ${FTS_MATCH_SUBQ})`;
-      params.push(phrase);
+      params.push(matchExpr);
     } else {
       // citation-style query (or no FTS): also match the citation columns
       const likeQ = `%${query.trim()}%`;
-      const contentClause = phrase
+      const contentClause = matchExpr
         ? `(processed = 1 AND ${FTS_MATCH_SUBQ})`
         : "(processed = 1 AND content LIKE ?)";
       where = `(citation LIKE ? COLLATE NOCASE OR real_citation LIKE ? COLLATE NOCASE OR ${contentClause})`;
-      params.push(likeQ, likeQ, phrase ?? likeQ);
+      params.push(likeQ, likeQ, matchExpr ?? likeQ);
     }
     if (reportedOnly) where += " AND real_citation IS NOT NULL";
 
@@ -419,10 +452,7 @@ export function relatedLocalJudgments(
     const db = getDb();
     if (!db) return [];
 
-    const terms = query
-      .split(/[^A-Za-z0-9]+/)
-      .filter((t) => t.length >= 4)
-      .slice(0, 6);
+    const terms = relatedTerms(query);
     if (!terms.length) return [];
 
     const expr = hasFts(db) ? ftsAnyOf(terms) : null;
@@ -594,19 +624,21 @@ export function countLocalJudgments(query: string, court?: string, year?: string
     const db = getDb();
     if (!db || !query.trim()) return 0;
 
-    const phrase = hasFts(db) ? ftsPhrase(query) : null;
+    // Mirror searchLocalJudgments: AND of every keyword so the count matches the
+    // results shown.
+    const matchExpr = hasFts(db) ? ftsAllOf(query) : null;
     const params: (string | number)[] = [];
     let where: string;
-    if (phrase && !looksLikeCitation(query)) {
+    if (matchExpr && !looksLikeCitation(query)) {
       where = `(processed = 1 AND ${FTS_MATCH_SUBQ})`;
-      params.push(phrase);
+      params.push(matchExpr);
     } else {
       const likeQ = `%${query.trim()}%`;
-      const contentClause = phrase
+      const contentClause = matchExpr
         ? `(processed = 1 AND ${FTS_MATCH_SUBQ})`
         : "(processed = 1 AND content LIKE ?)";
       where = `(citation LIKE ? COLLATE NOCASE OR real_citation LIKE ? COLLATE NOCASE OR ${contentClause})`;
-      params.push(likeQ, likeQ, phrase ?? likeQ);
+      params.push(likeQ, likeQ, matchExpr ?? likeQ);
     }
     if (reportedOnly) where += " AND real_citation IS NOT NULL";
     if (court && court !== "All Courts") { where += " AND court LIKE ?"; params.push(`${court}%`); }
@@ -631,7 +663,7 @@ export function countRelatedJudgments(query: string, court?: string, year?: stri
   try {
     const db = getDb();
     if (!db) return 0;
-    const terms = query.split(/[^A-Za-z0-9]+/).filter((t) => t.length >= 4).slice(0, 6);
+    const terms = relatedTerms(query);
     if (!terms.length) return 0;
 
     const expr = hasFts(db) ? ftsAnyOf(terms) : null;

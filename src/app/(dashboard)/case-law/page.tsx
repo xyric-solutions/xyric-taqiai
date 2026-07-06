@@ -5,7 +5,7 @@ import {
   Search, Upload, MessageSquare, X, Copy, Check,
   Scale, Send, Lightbulb, FileText, Gavel,
   BookMarked, Sparkles, Database, ChevronDown,
-  Bookmark, BookOpen, Eye, ChevronLeft, ChevronRight, Building2, Network,
+  Bookmark, BookOpen, Eye, ChevronLeft, ChevronRight, Building2, Network, SearchX,
 } from "lucide-react";
 import {
   isJudgmentSaved, toggleSavedJudgment, onSavedJudgmentsChange,
@@ -106,6 +106,9 @@ export default function JudgmentSearchPage() {
   // Local results
   const [localResults, setLocalResults] = useState<LocalJudgment[]>([]);
   const [isRelated, setIsRelated] = useState(false);
+  // The user searched a specific reported citation we don't hold — tell them
+  // honestly instead of dumping every same-year judgment.
+  const [citationNotFound, setCitationNotFound] = useState(false);
   // Smart (semantic) search fell back to keyword because the local model is offline
   const [semanticFallback, setSemanticFallback] = useState(false);
   const [localLoading, setLocalLoading] = useState(false);
@@ -275,6 +278,7 @@ export default function JudgmentSearchPage() {
         setLocalResults(data.results || []);
         setTotalResults((data.results || []).length);
         setIsRelated(false);
+        setCitationNotFound(false);
         setSemanticFallback(data.available === false);
         setHasMore(false); setPage(1); setTotalPages(1);
         setPassageIdx({});
@@ -298,6 +302,7 @@ export default function JudgmentSearchPage() {
       const data = await res.json();
       setLocalResults(data.results || []);
       setIsRelated(!!data.related);
+      setCitationNotFound(!!data.citationNotFound);
       setHasMore(!!data.hasMore);
       setPage(data.page || nextPage);
       setTotalPages(data.totalPages || 1);
@@ -650,11 +655,33 @@ export default function JudgmentSearchPage() {
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-5 items-start">
               {/* main column */}
               <div ref={resultsTopRef} className="space-y-3 min-w-0 scroll-mt-4">
+                {/* citation not held — honest message before anything else */}
+                {!localLoading && citationNotFound && (
+                  <div className="rounded-2xl p-5 flex items-start gap-3.5" style={cardStyle}>
+                    <span className="w-10 h-10 rounded-xl grid place-items-center flex-shrink-0 bg-warning-500/10">
+                      <SearchX className="h-5 w-5 text-warning-500" strokeWidth={1.75} />
+                    </span>
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
+                        &ldquo;{query}&rdquo; is not in our library yet
+                      </h3>
+                      <p className="text-[12px] mt-1 leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+                        We don&apos;t hold this exact citation. Double-check the citation number, or search by party name or keywords. You can also ask AI about it.
+                      </p>
+                      <button onClick={handleAskAI} disabled={aiLoading || !query.trim()}
+                        className="mt-3 inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-semibold rounded-lg bg-primary-500 text-[#07090f] hover:bg-primary-400 transition-all disabled:opacity-50">
+                        <Sparkles className="h-3.5 w-3.5" strokeWidth={2} /> Ask AI about this
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* fallback / count line */}
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <p className="text-[13px] flex items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
                     {searchMode === "smart" && !localLoading && !semanticFallback && localResults.length > 0 && <Sparkles className="h-3.5 w-3.5 text-ai-500" />}
                     {localLoading ? "Searching…"
+                      : citationNotFound ? (localResults.length > 0 ? "Related judgments by keyword" : "")
                       : localResults.length === 0 ? "No judgments found."
                       : isRelated ? `No exact match — showing ${localResults.length} of ${totalResults} related judgment${totalResults !== 1 ? "s" : ""}`
                       : searchMode === "smart" && !semanticFallback ? `${localResults.length} judgment${localResults.length > 1 ? "s" : ""} by meaning`
@@ -700,7 +727,7 @@ export default function JudgmentSearchPage() {
                   </div>
                 )}
 
-                {!localLoading && localResults.length === 0 && (
+                {!localLoading && localResults.length === 0 && !citationNotFound && (
                   <div className="rounded-2xl p-12 flex flex-col items-center text-center" style={cardStyle}>
                     <div className="w-16 h-16 rounded-2xl grid place-items-center mb-4" style={{ background: "var(--bg-surface-2)" }}><BookMarked className="h-7 w-7" style={{ color: "var(--text-tertiary)" }} /></div>
                     <h3 className="text-sm font-bold" style={{ color: "var(--text-secondary)" }}>No judgments matched your search</h3>
