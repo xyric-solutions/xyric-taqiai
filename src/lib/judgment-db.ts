@@ -281,13 +281,47 @@ function dedupeRows(rows: any[], limit: number, offset = 0): any[] {
   return out;
 }
 
+// Map a law-report "seat" (the [City] tag reported citations carry, e.g.
+// "2017 P Cr. L J 25[Peshawar]") to its court name.
+function courtFromSeat(seat: string): string | null {
+  const s = seat.toLowerCase();
+  if (s.includes("peshawar")) return "Peshawar High Court";
+  if (s.includes("lahore")) return "Lahore High Court";
+  if (s.includes("karachi") || s.includes("sindh") || s.includes("hyderabad") || s.includes("sukkur")) return "Sindh High Court";
+  if (s.includes("quetta") || s.includes("baluchistan") || s.includes("balochistan")) return "Balochistan High Court";
+  if (s.includes("islamabad")) return "Islamabad High Court";
+  if (s.includes("gilgit")) return "Gilgit-Baltistan Chief Court";
+  if (s.includes("azad") || s.includes("kashmir")) return "Azad Jammu & Kashmir High Court";
+  if (s.includes("federal shariat")) return "Federal Shariat Court";
+  if (s.includes("supreme")) return "Supreme Court of Pakistan";
+  return null;
+}
+
+/** Recover a missing/Unknown court from the "[City]" seat tag at the top of a
+ *  reported judgment's text. Returns null when no confident seat is found. */
+export function deriveCourtFromContent(content: string | null): string | null {
+  if (!content) return null;
+  const m = content.slice(0, 140).match(/\[\s*([A-Za-z][A-Za-z .&]{2,39}?)\s*\]/);
+  return m ? courtFromSeat(m[1]) : null;
+}
+
+/** True when a stored court value is real (not blank / "Unknown"). */
+export function hasKnownCourt(court: any): boolean {
+  const c = court && String(court).trim();
+  return !!c && c.toLowerCase() !== "unknown";
+}
+
 function toResult(r: any, query: string, related = false): JudgmentSearchResult {
   const real = r.real_citation && String(r.real_citation).trim();
+  // The "[City]" seat tag reported citations carry is authoritative — the scraped
+  // court column is often blank or wrong (the same citation appears tagged to
+  // different courts). Trust the seat first, fall back to the stored court.
+  const court = deriveCourtFromContent(r.content) || (hasKnownCourt(r.court) ? String(r.court).trim() : "Unknown Court");
   return {
     id: r.id,
     citation: real || r.citation,
     reported: !!real,
-    court: r.court || "Unknown Court",
+    court,
     year: r.year || 0,
     title: r.title || null,
     caseNo: r.title ? null : extractCaseNo(r.content),
@@ -354,6 +388,60 @@ export function searchLocalJudgments(
 
     const rows = db.prepare(sql).all(...params) as any[];
     return dedupeRows(rows, limit, offset).map((r) => toResult(r, query));
+  } catch {
+    return [];
+  }
+}
+
+/** Citation-mode search: return only judgments whose OWN citation IS the query
+ *  reference (normalized, ignoring spaces/punctuation) — never a content match. */
+export function searchCitationExact(
+  query: string,
+  limit = 20,
+  offset = 0,
+  reportedOnly = false
+): JudgmentSearchResult[] {
+  try {
+    const db = getDb();
+    const key = query.replace(/[^a-z0-9]/gi, "").toUpperCase();
+    if (!db || key.length < 4) return [];
+
+    // Cheap pre-filter on the citation columns, then an exact normalized check in
+    // JS. Separators can appear INSIDE a stored citation ("2019 Y L R 757"), so put
+    // a wildcard between every character rather than only between query tokens.
+    const likeQ = "%" + key.split("").join("%") + "%";
+    let where = "(citation LIKE ? COLLATE NOCASE OR real_citation LIKE ? COLLATE NOCASE)";
+    const params: (string | number)[] = [likeQ, likeQ];
+    if (reportedOnly) where += " AND real_citation IS NOT NULL";
+    params.push((offset + limit) * 6 + 20);
+
+    const sql = `
+      SELECT id, citation, real_citation, court, year, title, processed,
+        CASE WHEN content IS NOT NULL THEN substr(content, 1, 4000) ELSE NULL END AS content
+      FROM judgments
+      WHERE processed = 1 AND ${where}
+      ORDER BY (real_citation IS NOT NULL) DESC, year DESC, id ASC
+      LIMIT ?
+    `;
+    const norm = (v: string | null) => (v ? String(v).replace(/[^a-z0-9]/gi, "").toUpperCase() : "");
+    const matched = (db.prepare(sql).all(...params) as any[]).filter(
+      (r) => norm(r.real_citation) === key || norm(r.citation) === key
+    );
+    // One judgment per citation: collapse duplicate imports of the same reference.
+    // Prefer a copy that carries a real court, then the one with the most text
+    // (some imports are header-only stubs; others lost their court metadata).
+    const better = (r: any, prev: any) => {
+      const rc = hasKnownCourt(r.court), pc = hasKnownCourt(prev.court);
+      if (rc !== pc) return rc;
+      return (r.content?.length || 0) > (prev.content?.length || 0);
+    };
+    const best = new Map<string, any>();
+    for (const r of matched) {
+      const k = norm(r.real_citation) || norm(r.citation) || `id:${r.id}`;
+      const prev = best.get(k);
+      if (!prev || better(r, prev)) best.set(k, r);
+    }
+    return Array.from(best.values()).slice(offset, offset + limit).map((r) => toResult(r, query));
   } catch {
     return [];
   }

@@ -252,7 +252,7 @@ export default function JudgmentSearchPage() {
 
   const runSearch = async (
     overrideQuery?: string,
-    opts?: { court?: string; year?: string; sort?: SortMode; page?: number; reported?: boolean; limit?: ResultLimit }
+    opts?: { court?: string; year?: string; sort?: SortMode; page?: number; reported?: boolean; limit?: ResultLimit; mode?: SearchMode }
   ) => {
     const q = (overrideQuery ?? query).trim();
     if (!q) return;
@@ -262,6 +262,9 @@ export default function JudgmentSearchPage() {
     const nextPage = opts?.page ?? 1;
     const reported = opts?.reported ?? reportedOnly;
     const limit = opts?.limit ?? resultLimit;
+    // Caller can force the mode (state updates are async, so a just-set mode isn't
+    // visible in this render); otherwise use the active tab.
+    const effectiveMode = opts?.mode ?? searchMode;
 
     setToolTab("search");
     setSearched(true);
@@ -269,7 +272,7 @@ export default function JudgmentSearchPage() {
     setAiResult(""); setAiError("");
 
     // Smart (semantic) search: one ranked page from the local embedding model.
-    if (searchMode === "smart") {
+    if (effectiveMode === "smart") {
       try {
         const params = new URLSearchParams({ q });
         if (court !== "All Courts") params.set("court", court);
@@ -299,6 +302,8 @@ export default function JudgmentSearchPage() {
       if (court !== "All Courts") params.set("court", court);
       if (year !== "All years") params.set("year", year);
       if (!reported) params.set("reported", "0");
+      // Citation tab: match the citation field exactly, not the judgment text.
+      if (effectiveMode === "citation") params.set("mode", "citation");
       // After page 1 we already know whether we're in related-fallback mode.
       if (nextPage > 1 && isRelated) params.set("related", "1");
       const res = await fetch(`/api/judgments/local?${params}`);
@@ -333,7 +338,10 @@ export default function JudgmentSearchPage() {
     if (!kw || localLoading) return;
     setQuery(kw);
     setRefineKw("");
-    runSearch(kw);
+    // These are topic words, not a citation — run them as a keyword search.
+    setSearchMode("keyword");
+    setCitationNotFound(false);
+    runSearch(kw, { mode: "keyword" });
   };
 
   const handleAskAI = async () => {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   searchLocalJudgments,
   searchSectionJudgments,
+  searchCitationExact,
   relatedLocalJudgments,
   getJudgmentDbStats,
   getCitedByCounts,
@@ -80,6 +81,25 @@ export async function GET(req: NextRequest) {
     }
     return enriched;
   };
+  // Explicit Citation-mode search (the "Citation" tab): match the judgment's OWN
+  // citation, not its text. Either we hold that exact reference or we don't — no
+  // dumping every judgment that merely mentions the tokens.
+  const mode = searchParams.get("mode") || "";
+  if (mode === "citation" && !relatedMode) {
+    const found = await searchCitationExact(query, PAGE_SIZE + 1, offset, reportedOnly);
+    const hasMore = found.length > PAGE_SIZE;
+    return NextResponse.json({
+      results: await withCitedBy(found.slice(0, PAGE_SIZE)),
+      related: false,
+      citationNotFound: found.length === 0 && page === 1,
+      hasMore,
+      page,
+      total: hasMore ? offset + PAGE_SIZE + 1 : offset + found.length,
+      totalPages: page + (hasMore ? 1 : 0),
+      stats: await getJudgmentDbStats(),
+    });
+  }
+
   const sectionMode = isSectionQuery(query);
 
   if (sectionMode && !relatedMode) {

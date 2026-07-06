@@ -12,8 +12,11 @@ import {
   getLocalJudgmentById as getLocalJudgmentByIdSqlite,
   relatedLocalJudgments as relatedLocalJudgmentsSqlite,
   searchLocalJudgments as searchLocalJudgmentsSqlite,
+  searchCitationExact as searchCitationExactSqlite,
   searchSectionJudgments as searchSectionJudgmentsSqlite,
   getCitedByCounts as getCitedByCountsSqlite,
+  deriveCourtFromContent,
+  hasKnownCourt,
   type JudgmentRow,
   type JudgmentSearchResult,
   type SortMode,
@@ -177,11 +180,13 @@ function dedupeRows(rows: any[], limit: number, offset = 0): any[] {
 function toResult(row: any, query: string, related = false): JudgmentSearchResult {
   const real = row.real_citation && String(row.real_citation).trim();
   const content = row.content || null;
+  // Seat tag in the citation text is authoritative; stored court is often wrong.
+  const court = deriveCourtFromContent(content) || (hasKnownCourt(row.court) ? String(row.court).trim() : "Unknown Court");
   return {
     id: Number(row.id),
     citation: real || row.citation,
     reported: !!real,
-    court: row.court || "Unknown Court",
+    court,
     year: Number(row.year || 0),
     title: row.title || null,
     caseNo: row.title ? null : extractCaseNo(content),
@@ -562,6 +567,60 @@ export async function findReportedByCitations(citations: string[]): Promise<Reco
     }
   }
   return findReportedByCitationsSqlite(citations);
+}
+
+// Citation-mode search: match the query against a judgment's OWN citation field
+// (normalized, ignoring spaces/punctuation), NOT the full text. A citation number
+// carries no topic, so a content search for "PLD 2019 SC 304" wrongly returns every
+// judgment that merely mentions those tokens. Here we only return the judgment(s)
+// whose real_citation/citation actually IS that reference.
+export async function searchCitationExact(
+  query: string,
+  limit = 20,
+  offset = 0,
+  reportedOnly = false
+): Promise<JudgmentSearchResult[]> {
+  const key = query.replace(/[^a-z0-9]/gi, "").toUpperCase();
+  if (key.length < 4) return [];
+  if (usePostgres()) {
+    try {
+      const params: any[] = [key];
+      const citationMatch = reportedOnly
+        ? "(j.real_citation IS NOT NULL AND upper(regexp_replace(j.real_citation, '[^a-zA-Z0-9]', '', 'g')) = $1)"
+        : "(upper(regexp_replace(COALESCE(j.real_citation, j.citation, ''), '[^a-zA-Z0-9]', '', 'g')) = $1)";
+      params.push(Math.min(60, limit + offset + 5));
+      const rows = await prisma.$queryRawUnsafe<any[]>(
+        `
+          SELECT j.id, j.citation, j.real_citation, j.court, j.year, j.title, j.processed,
+                 substr(j.content, 1, 4000) AS content, 0 AS rank
+          FROM legal_judgments j
+          WHERE j.processed = 1 AND ${citationMatch}
+          ORDER BY (j.real_citation IS NOT NULL) DESC, j.year DESC, j.id ASC
+          LIMIT $${params.length}
+        `,
+        ...params
+      );
+      // One judgment per citation: collapse duplicate imports of the same
+      // reference. Prefer a copy with a real court, then the one with the most
+      // text (some are header-only stubs; others lost their court metadata).
+      const norm = (v: any) => (v ? String(v).replace(/[^a-z0-9]/gi, "").toUpperCase() : "");
+      const better = (r: any, prev: any) => {
+        const rc = hasKnownCourt(r.court), pc = hasKnownCourt(prev.court);
+        if (rc !== pc) return rc;
+        return (r.content?.length || 0) > (prev.content?.length || 0);
+      };
+      const best = new Map<string, any>();
+      for (const row of rows) {
+        const k = norm(row.real_citation) || norm(row.citation) || `id:${row.id}`;
+        const prev = best.get(k);
+        if (!prev || better(row, prev)) best.set(k, row);
+      }
+      return Array.from(best.values()).slice(offset, offset + limit).map((row) => toResult(row, query));
+    } catch {
+      return [];
+    }
+  }
+  return searchCitationExactSqlite(query, limit, offset, reportedOnly);
 }
 
 export async function getCitedByCount(citation: string | null): Promise<number> {
