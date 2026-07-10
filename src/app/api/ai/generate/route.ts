@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTemplate } from "@/templates";
+import { getAllTemplates, getTemplate } from "@/templates";
 import { generateDocument } from "@/lib/gemini";
 import { isIncompleteLegalDocument, normalizeGeneratedHtml, repairIncompleteCourtDocument } from "@/lib/document-html";
 import { formatAmountFull, isAmountField } from "@/lib/pk-format";
@@ -173,11 +173,7 @@ function processAmountFields(formData: Record<string, string>, template: Templat
   return processed;
 }
 
-const ALLOWED_CATEGORIES = [
-  "affidavit", "agreement", "family-law", "power-of-attorney",
-  "court-application", "civil-suit", "criminal-case", "legal-notice",
-  "appeal", "writ-petition", "deed", "noc", "undertaking",
-];
+const ALLOWED_CATEGORIES = new Set(getAllTemplates().map((template) => template.category));
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -196,7 +192,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!ALLOWED_CATEGORIES.includes(category)) {
+    if (!ALLOWED_CATEGORIES.has(category)) {
       return NextResponse.json({ error: "Invalid document category" }, { status: 400 });
     }
 

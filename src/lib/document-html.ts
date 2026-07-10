@@ -24,6 +24,44 @@ const SAFE_STYLE_PROPERTIES = new Set([
   "text-decoration",
 ]);
 
+const ALLOWED_HTML_TAGS = new Set([
+  "blockquote",
+  "br",
+  "div",
+  "em",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "i",
+  "li",
+  "ol",
+  "p",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "u",
+  "ul",
+]);
+
+const VOID_HTML_TAGS = new Set(["br", "hr"]);
+const DANGEROUS_BLOCK_TAGS = /<(script|style|iframe|object|embed|svg|math|form)[\s\S]*?<\/\1>/gi;
+const DANGEROUS_TAGS = /<\/?(?:script|style|iframe|object|embed|svg|math|form|input|button|select|textarea|link|meta|base)[^>]*>/gi;
+const HTML_TAG_PATTERN = /<\/?([a-zA-Z][\w:-]*)([^>]*)>/g;
+const HTML_ATTRIBUTE_PATTERN = /([:\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+
 function sanitizeInlineStyle(style: string): string {
   return style
     .split(";")
@@ -33,14 +71,84 @@ function sanitizeInlineStyle(style: string): string {
       const separator = item.indexOf(":");
       if (separator < 1) return "";
       const property = item.slice(0, separator).trim().toLowerCase();
-      const value = item.slice(separator + 1).trim();
+      const value = item.slice(separator + 1).trim().replace(/["']/g, "");
       if (!SAFE_STYLE_PROPERTIES.has(property)) return "";
       if (!value || /(?:url|expression|javascript|behavior)\s*\(/i.test(value)) return "";
-      if (!/^[#(),.%\w\s"'-]+$/.test(value)) return "";
+      if (!/^[#(),.%\w\s-]+$/.test(value)) return "";
       return `${property}: ${value}`;
     })
     .filter(Boolean)
     .join("; ");
+}
+
+function sanitizeHtmlAttributes(
+  tagName: string,
+  rawAttributes: string,
+  options: NormalizeHtmlOptions
+): string {
+  const attributes: string[] = [];
+
+  rawAttributes.replace(
+    HTML_ATTRIBUTE_PATTERN,
+    (_match, rawName: string, doubleQuoted?: string, singleQuoted?: string, unquoted?: string) => {
+      const name = rawName.toLowerCase();
+      const value = (doubleQuoted ?? singleQuoted ?? unquoted ?? "").trim();
+
+      if (!value || name.startsWith("on")) return "";
+
+      if (name === "style" && options.preserveInlineStyles) {
+        const safeStyle = sanitizeInlineStyle(value);
+        if (safeStyle) {
+          attributes.push(`style="${safeStyle}"`);
+        }
+        return "";
+      }
+
+      if (name === "dir" && /^(ltr|rtl|auto)$/i.test(value)) {
+        attributes.push(`dir="${value.toLowerCase()}"`);
+        return "";
+      }
+
+      if (name === "align" && /^(left|right|center|justify)$/i.test(value)) {
+        attributes.push(`align="${value.toLowerCase()}"`);
+        return "";
+      }
+
+      if (
+        (tagName === "td" || tagName === "th") &&
+        (name === "colspan" || name === "rowspan") &&
+        /^\d{1,2}$/.test(value)
+      ) {
+        const numericValue = Math.max(1, Math.min(20, Number(value)));
+        attributes.push(`${name}="${numericValue}"`);
+      }
+
+      return "";
+    }
+  );
+
+  return attributes.length ? ` ${attributes.join(" ")}` : "";
+}
+
+function sanitizeHtmlTags(html: string, options: NormalizeHtmlOptions): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(DANGEROUS_BLOCK_TAGS, "")
+    .replace(DANGEROUS_TAGS, "")
+    .replace(HTML_TAG_PATTERN, (match, rawTagName: string, rawAttributes: string) => {
+      const tagName = rawTagName.toLowerCase();
+      if (!ALLOWED_HTML_TAGS.has(tagName)) {
+        return "";
+      }
+
+      const isClosingTag = /^<\s*\//.test(match);
+      if (isClosingTag) {
+        return VOID_HTML_TAGS.has(tagName) ? "" : `</${tagName}>`;
+      }
+
+      const safeAttributes = sanitizeHtmlAttributes(tagName, rawAttributes || "", options);
+      return `<${tagName}${safeAttributes}>`;
+    });
 }
 
 export function normalizeGeneratedHtml(raw: string, options: NormalizeHtmlOptions = {}): string {
@@ -72,6 +180,7 @@ export function normalizeGeneratedHtml(raw: string, options: NormalizeHtmlOption
   }
   cleaned = cleaned.replace(/\sclass=(["'])[\s\S]*?\1/gi, "");
   cleaned = cleaned.replace(/\s(?:page-break-before|page-break-after|break-before|break-after)=(["'])[\s\S]*?\1/gi, "");
+  cleaned = sanitizeHtmlTags(cleaned, options);
 
   cleaned = cleaned.replace(/\[[^\]]*\*[^\]]*\]/g, "___________");
   cleaned = cleaned.replace(/\[\s*(?:Note|NOTE|Optional|OPTIONAL|N\/A|Missing|MISSING)[^\]]*\]/g, "___________");

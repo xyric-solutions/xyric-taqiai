@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { geminiGenerate } from "@/lib/gemini-helper";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { getSafeAiError } from "@/lib/ai-error";
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -64,16 +65,14 @@ Return ONLY the complete updated document as clean HTML (no markdown, no code fe
     return NextResponse.json({ html: cleaned });
   } catch (error: unknown) {
     console.error("Edit document error:", error);
-    const msg = error instanceof Error ? error.message : "";
-    if (msg.includes("429") || msg.includes("quota") || msg.includes("exhausted")) {
-      return NextResponse.json(
-        { error: "AI quota khatam. Thori der baad try karein." },
-        { status: 429 }
-      );
-    }
+    const friendly = getSafeAiError(
+      error,
+      "Edit failed. Please try again.",
+      "AI quota khatam. Thori der baad try karein."
+    );
     return NextResponse.json(
-      { error: `Edit failed: ${msg || "Unknown error"}` },
-      { status: 500 }
+      { error: friendly.error },
+      { status: friendly.status }
     );
   }
 }

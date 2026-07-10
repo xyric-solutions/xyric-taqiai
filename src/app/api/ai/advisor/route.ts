@@ -10,6 +10,7 @@ import { retrieveStatuteGrounding } from "@/lib/statute-retrieval";
 import { stampDutyBlock, feeProvinceOf } from "@/lib/stamp-duty-reference";
 import { latestFinanceFeeAmendments } from "@/lib/statute-db-runtime";
 import { legalUpdatesBlock } from "@/lib/legal-updates-reference";
+import { getSafeAiError } from "@/lib/ai-error";
 
 export const dynamic = "force-dynamic";
 
@@ -139,12 +140,12 @@ export async function POST(request: NextRequest) {
           // finished answer, not as a lone block before any text arrives.
           send({ type: "done", intent, sources });
         } catch (error: unknown) {
-          const m = error instanceof Error ? error.message : "";
-          const friendly =
-            m.includes("429") || m.includes("quota") || m.includes("exhausted")
-              ? "AI quota exhausted. Please wait 1 minute and try again."
-              : `AI response failed: ${m || "Unknown error"}`;
-          send({ type: "error", error: friendly });
+          const friendly = getSafeAiError(
+            error,
+            "AI response failed. Please try again.",
+            "AI quota exhausted. Please wait 1 minute and try again."
+          );
+          send({ type: "error", error: friendly.error });
         } finally {
           controller.close();
         }
@@ -160,18 +161,15 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: unknown) {
     console.error("AI advisor error:", error);
-    const msg = error instanceof Error ? error.message : "";
-
-    if (msg.includes("429") || msg.includes("quota") || msg.includes("exhausted")) {
-      return NextResponse.json(
-        { error: "AI quota exhausted. Please wait 1 minute and try again." },
-        { status: 429 }
-      );
-    }
+    const friendly = getSafeAiError(
+      error,
+      "AI response failed. Please try again.",
+      "AI quota exhausted. Please wait 1 minute and try again."
+    );
 
     return NextResponse.json(
-      { error: `AI response failed: ${msg || "Unknown error"}` },
-      { status: 500 }
+      { error: friendly.error },
+      { status: friendly.status }
     );
   }
 }

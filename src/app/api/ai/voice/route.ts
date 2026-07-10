@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { geminiGenerate } from "@/lib/gemini-helper";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { getSafeAiError } from "@/lib/ai-error";
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -42,10 +43,11 @@ Do NOT translate Urdu into English. Do NOT summarize. Just transcribe what is sa
     return NextResponse.json({ text: text.trim() });
   } catch (error: unknown) {
     console.error("Voice error:", error);
-    const msg = error instanceof Error ? error.message : "";
-    if (msg.includes("429") || msg.includes("quota")) {
-      return NextResponse.json({ error: "AI quota exhausted. Try again later." }, { status: 429 });
-    }
-    return NextResponse.json({ error: `Voice failed: ${msg}` }, { status: 500 });
+    const friendly = getSafeAiError(
+      error,
+      "Voice processing failed. Please try again.",
+      "AI quota exhausted. Try again later."
+    );
+    return NextResponse.json({ error: friendly.error }, { status: friendly.status });
   }
 }

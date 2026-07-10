@@ -37,17 +37,11 @@ function localSqliteAvailable(): boolean {
   return _localSqlite;
 }
 
-function usePostgres(): boolean {
+function shouldUsePostgres(): boolean {
   const isPg = /^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL || "");
   if (!isPg) return false;
-  // Prefer the local SQLite corpus whenever the file is present — fast and
-  // reliable, no proxy (278k judgments w/ FTS5, ~15ms). This covers BOTH
-  // `next dev` and a LOCAL production build (`next start`), which would
-  // otherwise hit the flaky Railway PUBLIC PROXY and fail with "connection was
-  // slow". On Railway the .db files are gitignored / not deployed, so this is
-  // false there and Postgres is used. (Deliberately NOT gated on NODE_ENV, so a
-  // local production build stays on the fast local corpus.)
-  return !localSqliteAvailable();
+  // PostgreSQL is the primary judgment store; SQLite is opt-in for local debugging only.
+  return process.env.USE_SQLITE_JUDGMENTS !== "1";
 }
 
 function cleanSearchTerm(value: string): string {
@@ -216,7 +210,7 @@ function sectionVariants(query: string): string[] {
   );
 }
 
-// Reporter / court abbreviations that carry no content meaning — dropping them
+// Reporter / court abbreviations that carry no content meaning â€” dropping them
 // from the keyword-fallback keeps "related" matching on real legal terms instead
 // of on a year or a citation code (which would flood every same-year judgment).
 const CITATION_NOISE = new Set([
@@ -232,7 +226,7 @@ function queryTerms(query: string): string[] {
   return query
     .split(/[^A-Za-z0-9]+/)
     // Real keywords only: drop short tokens, bare numbers (years, citation page
-    // numbers), and reporter/court codes — none are content keywords.
+    // numbers), and reporter/court codes â€” none are content keywords.
     .filter((term) => term.length >= 4 && !/^\d+$/.test(term) && !isYearToken(term) && !CITATION_NOISE.has(term.toLowerCase()))
     .slice(0, 6);
 }
@@ -265,16 +259,16 @@ async function searchPg(
 ): Promise<JudgmentSearchResult[] | null> {
   try {
     const cleaned = cleanSearchTerm(query);
-    // Primary (non-related): AND of every term — websearch_to_tsquery ANDs
+    // Primary (non-related): AND of every term â€” websearch_to_tsquery ANDs
     // unquoted words, so a result must contain ALL the searched keywords, not
     // just one. Related fallback: OR of the significant terms (broadest net).
     const expr = related ? anyExpr(queryTerms(query)) : (cleaned.length >= 2 ? cleaned : null);
     if (!expr) return [];
 
-    // Inline the tsquery instead of a `WITH q … CROSS JOIN q` CTE. The CTE form
+    // Inline the tsquery instead of a `WITH q â€¦ CROSS JOIN q` CTE. The CTE form
     // hides the tsquery from the planner, which then can't use the GIN index
     // (legal_judgments_search_idx) and falls back to a full seq scan of ~278k
-    // rows — minutes over the slow proxy. Inlined, it uses a Bitmap Index Scan
+    // rows â€” minutes over the slow proxy. Inlined, it uses a Bitmap Index Scan
     // (~10ms). $1 is the tsquery string and can be referenced multiple times.
     const tsq = "websearch_to_tsquery('simple', $1)";
 
@@ -328,7 +322,7 @@ export async function searchLocalJudgments(
   offset = 0,
   reportedOnly = false
 ): Promise<JudgmentSearchResult[]> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     const rows = await searchPg(query, court, year, limit, sort, offset, reportedOnly, false);
     if (rows) return rows;
   }
@@ -344,7 +338,7 @@ export async function relatedLocalJudgments(
   offset = 0,
   reportedOnly = false
 ): Promise<JudgmentSearchResult[]> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     const rows = await searchPg(query, court, year, limit, sort, offset, reportedOnly, true);
     if (rows) return rows;
   }
@@ -359,7 +353,7 @@ export async function searchSectionJudgments(
   offset = 0,
   reportedOnly = false
 ): Promise<JudgmentSearchResult[]> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     try {
       const variants = sectionVariants(query);
       const expr = anyExpr(variants.slice(0, 4));
@@ -430,7 +424,7 @@ export async function countLocalJudgments(
   year?: string,
   reportedOnly = false
 ): Promise<number> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     const count = await countPg(query, court, year, reportedOnly, false);
     if (count !== null) return count;
   }
@@ -443,7 +437,7 @@ export async function countRelatedJudgments(
   year?: string,
   reportedOnly = false
 ): Promise<number> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     const count = await countPg(query, court, year, reportedOnly, true);
     if (count !== null) return count;
   }
@@ -451,7 +445,7 @@ export async function countRelatedJudgments(
 }
 
 export async function getJudgmentDbStats(): Promise<{ total: number; processed: number }> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     try {
       const rows = await prisma.$queryRawUnsafe<{ total: bigint; processed: bigint }[]>(`
         SELECT COUNT(*)::bigint AS total, COALESCE(SUM(processed), 0)::bigint AS processed
@@ -469,7 +463,7 @@ export async function getJudgmentDbStats(): Promise<{ total: number; processed: 
 }
 
 export async function getLocalJudgmentById(id: number): Promise<JudgmentRow | null> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     // Retry several times: a flaky proxy (or a transient Railway pool blip) can
     // drop a connection, and a single failure here otherwise surfaces as a bogus
     // "connection was slow" even though the judgment HAS content. Select only the
@@ -487,7 +481,7 @@ export async function getLocalJudgmentById(id: number): Promise<JudgmentRow | nu
         await new Promise((r) => setTimeout(r, 400 + attempt * 300));
       }
     }
-    // All attempts failed — signal a transient error (not "no such judgment")
+    // All attempts failed â€” signal a transient error (not "no such judgment")
     // so the caller can tell it apart from a genuine miss.
     throw lastErr instanceof Error ? lastErr : new Error("judgment lookup failed");
   }
@@ -499,7 +493,7 @@ export async function getJudgmentsByIds(
   query: string,
   opts: { court?: string; year?: string; reportedOnly?: boolean; limit?: number } = {}
 ): Promise<JudgmentSearchResult[]> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     try {
       if (!ids.length) return [];
       const placeholders = ids.map((_, idx) => `$${idx + 1}`).join(",");
@@ -539,7 +533,7 @@ export async function getJudgmentsByIds(
 }
 
 export async function findReportedByCitations(citations: string[]): Promise<Record<string, number>> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     try {
       const norm = (value: string) => value.replace(/[^a-z0-9]/gi, "").toUpperCase();
       const keys = Array.from(new Set(citations.map(norm).filter((key) => key.length >= 4))).slice(0, 60);
@@ -582,7 +576,7 @@ export async function searchCitationExact(
 ): Promise<JudgmentSearchResult[]> {
   const key = query.replace(/[^a-z0-9]/gi, "").toUpperCase();
   if (key.length < 4) return [];
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     try {
       const params: any[] = [key];
       const citationMatch = reportedOnly
@@ -624,7 +618,7 @@ export async function searchCitationExact(
 }
 
 export async function getCitedByCount(citation: string | null): Promise<number> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     try {
       if (!citation) return 0;
       const key = citation.replace(/[^a-z0-9]/gi, "").toUpperCase();
@@ -642,7 +636,7 @@ export async function getCitedByCount(citation: string | null): Promise<number> 
 }
 
 export async function getCitedByCounts(citations: string[]): Promise<Record<string, number>> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     try {
       const keys = Array.from(
         new Set(citations.map((citation) => citation.replace(/[^a-z0-9]/gi, "").toUpperCase()).filter((key) => key.length >= 5))

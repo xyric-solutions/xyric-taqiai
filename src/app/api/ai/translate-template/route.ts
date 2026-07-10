@@ -3,6 +3,7 @@ import { geminiGenerate } from "@/lib/gemini-helper";
 import { getTranslationTemplate } from "@/templates/translations";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { getSafeAiError } from "@/lib/ai-error";
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -85,18 +86,15 @@ ${text}`;
     return NextResponse.json({ html, fields });
   } catch (error: unknown) {
     console.error("Template translation error:", error);
-    const msg = error instanceof Error ? error.message : "";
-
-    if (msg.includes("429") || msg.includes("quota") || msg.includes("exhausted")) {
-      return NextResponse.json(
-        { error: "AI quota exhausted. Please wait 1 minute and try again." },
-        { status: 429 }
-      );
-    }
+    const friendly = getSafeAiError(
+      error,
+      "Translation failed. Please try again.",
+      "AI quota exhausted. Please wait 1 minute and try again."
+    );
 
     return NextResponse.json(
-      { error: `Translation failed: ${msg || "Unknown error"}` },
-      { status: 500 }
+      { error: friendly.error },
+      { status: friendly.status }
     );
   }
 }

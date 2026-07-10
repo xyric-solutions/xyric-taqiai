@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, Part } from "@google/generative-ai";
+import { GoogleGenerativeAI, Part, type GenerationConfig } from "@google/generative-ai";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -59,9 +59,12 @@ export async function geminiGenerate(
  * long pause users saw before the answer appeared. These answers are short
  * (200-300 words) so the thinking phase adds latency with no real benefit.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fastConfig(modelName: string): any {
-  const config: any = { maxOutputTokens: 1400, temperature: 0.7 };
+type FastGenerationConfig = GenerationConfig & {
+  thinkingConfig?: { thinkingBudget: number };
+};
+
+function fastConfig(modelName: string): FastGenerationConfig {
+  const config: FastGenerationConfig = { maxOutputTokens: 1400, temperature: 0.7 };
   if (modelName.startsWith("gemini-2.5")) {
     config.thinkingConfig = { thinkingBudget: 0 };
   }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser, removeAuthCookie } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { getCurrentUser, isJwtConfigError, removeAuthCookie } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 
 export async function GET() {
   try {
@@ -9,15 +9,31 @@ export async function GET() {
       return NextResponse.json({ user: null }, { status: 401 });
     }
 
-    const user = db.users.findById(session.userId);
+    const user = await prisma.user.findUnique({
+      where: { id: session.userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        barCouncilId: true,
+        language: true,
+      },
+    });
     if (!user) {
+      await removeAuthCookie();
       return NextResponse.json({ user: null }, { status: 401 });
     }
 
     return NextResponse.json({
-      user: { id: user.id, name: user.name, email: user.email, barCouncilId: user.barCouncilId, language: user.language },
+      user,
     });
-  } catch {
+  } catch (error) {
+    if (isJwtConfigError(error)) {
+      return NextResponse.json(
+        { user: null, error: "Server auth is not configured." },
+        { status: 500 }
+      );
+    }
     return NextResponse.json({ user: null }, { status: 401 });
   }
 }

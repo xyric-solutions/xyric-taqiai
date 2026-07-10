@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { geminiGenerate } from "@/lib/gemini-helper";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { getSafeAiError } from "@/lib/ai-error";
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -77,12 +78,11 @@ RULES:
     return NextResponse.json({ html: cleanHtml, rawText });
   } catch (error: unknown) {
     console.error("Document extraction error:", error);
-    const msg = error instanceof Error ? error.message : "";
-
-    if (msg.includes("429") || msg.includes("quota") || msg.includes("exhausted")) {
-      return NextResponse.json({ error: "AI quota exhausted. Thori der baad try karein." }, { status: 429 });
-    }
-
-    return NextResponse.json({ error: `Document extract nahi ho saka: ${msg || "Unknown error"}` }, { status: 500 });
+    const friendly = getSafeAiError(
+      error,
+      "Document extract nahi ho saka. Please try again.",
+      "AI quota exhausted. Thori der baad try karein."
+    );
+    return NextResponse.json({ error: friendly.error }, { status: friendly.status });
   }
 }

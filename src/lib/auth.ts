@@ -2,8 +2,20 @@ import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 
-const jwtSecret = process.env.JWT_SECRET || "default-secret-change-me-in-production";
-const JWT_SECRET = new TextEncoder().encode(jwtSecret);
+const JWT_SECRET_MIN_LENGTH = 32;
+const JWT_SECRET_ERROR = `JWT_SECRET must be set to at least ${JWT_SECRET_MIN_LENGTH} characters`;
+
+export function getJwtSecretKey(): Uint8Array {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || jwtSecret.length < JWT_SECRET_MIN_LENGTH) {
+    throw new Error(JWT_SECRET_ERROR);
+  }
+  return new TextEncoder().encode(jwtSecret);
+}
+
+export function isJwtConfigError(error: unknown): boolean {
+  return error instanceof Error && error.message === JWT_SECRET_ERROR;
+}
 
 export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 12);
@@ -24,14 +36,17 @@ export async function createToken(payload: {
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("7d")
     .setIssuedAt()
-    .sign(JWT_SECRET);
+    .sign(getJwtSecretKey());
 }
 
 export async function verifyToken(token: string) {
   try {
-    const { payload } = await jwtVerify(token, JWT_SECRET);
+    const { payload } = await jwtVerify(token, getJwtSecretKey());
     return payload as { userId: string; email: string };
-  } catch {
+  } catch (error) {
+    if (isJwtConfigError(error)) {
+      throw error;
+    }
     return null;
   }
 }

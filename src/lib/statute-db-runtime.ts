@@ -25,7 +25,7 @@ function localStatutesAvailable(): boolean {
   return _localStatutes;
 }
 
-function usePostgres(): boolean {
+function shouldUsePostgres(): boolean {
   const isPg = /^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL || "");
   if (!isPg) return false;
   // Prefer the local SQLite statutes corpus whenever the file is present — fast,
@@ -262,7 +262,7 @@ export async function searchStatuteSections(
   max = 5,
   question = ""
 ): Promise<StatuteHit[]> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     const hits = await searchStatuteSectionsPg(terms, max, question);
     if (hits) return hits;
   }
@@ -328,7 +328,7 @@ export async function findRelatedAmendments(
   excludeActId: number,
   max = 4
 ): Promise<AmendmentDoc[]> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     const docs = await findRelatedAmendmentsPg(actName, province, excludeActId, max);
     if (docs) return docs;
   }
@@ -393,7 +393,7 @@ export async function latestFinanceFeeAmendments(
   province: string,
   max = 2
 ): Promise<{ actName: string; year: number | null; text: string }[]> {
-  if (usePostgres()) {
+  if (shouldUsePostgres()) {
     const docs = await latestFinanceFeeAmendmentsPg(province, max);
     if (docs) return docs;
   }

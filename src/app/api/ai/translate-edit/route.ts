@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { geminiGenerate } from "@/lib/gemini-helper";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { getSafeAiError } from "@/lib/ai-error";
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -42,13 +43,11 @@ ${html}`;
 
     return NextResponse.json({ html: clean });
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : "";
-    if (msg.includes("429") || msg.includes("quota") || msg.includes("exhausted")) {
-      return NextResponse.json(
-        { error: "AI quota khatam. 1 minute ruk ke try karein." },
-        { status: 429 }
-      );
-    }
-    return NextResponse.json({ error: `Edit failed: ${msg || "Unknown error"}` }, { status: 500 });
+    const friendly = getSafeAiError(
+      error,
+      "Edit failed. Please try again.",
+      "AI quota khatam. 1 minute ruk ke try karein."
+    );
+    return NextResponse.json({ error: friendly.error }, { status: friendly.status });
   }
 }

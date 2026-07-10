@@ -69,13 +69,13 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
       case "textarea":
         return (
           <div key={field.name} className="w-full">
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">
               {label}
-              {field.required && <span className="text-red-500 ml-1">*</span>}
+              {field.required && <span className="text-danger-500 ml-1">*</span>}
             </label>
             <textarea
-              className={`w-full px-4 py-3 border rounded-xl text-slate-900 placeholder-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400 ${
-                errors[field.name] ? "border-red-400" : "border-slate-200 hover:border-slate-300"
+              className={`w-full px-4 py-3 border rounded-xl text-[var(--text-primary)] placeholder-[var(--text-tertiary)] bg-[var(--bg-surface-2)] focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-y ${
+                errors[field.name] ? "border-danger-500/60 focus:ring-danger-500/30" : "border-[var(--border-subtle)] hover:border-[var(--border-default)]"
               }`}
               rows={4}
               placeholder={placeholder}
@@ -87,32 +87,32 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
                 <Sparkles className="h-3 w-3" /> AI can help suggest content for this field
               </p>
             )}
-            {errors[field.name] && <p className="mt-1.5 text-sm text-red-500">{errors[field.name]}</p>}
+            {errors[field.name] && <p className="mt-1.5 text-sm text-danger-500">{errors[field.name]}</p>}
           </div>
         );
 
       case "select":
         return (
           <div key={field.name} className="w-full">
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">
               {label}
-              {field.required && <span className="text-red-500 ml-1">*</span>}
+              {field.required && <span className="text-danger-500 ml-1">*</span>}
             </label>
             <select
-              className={`w-full px-4 py-2.5 border rounded-xl text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400 ${
-                errors[field.name] ? "border-red-400" : "border-slate-200 hover:border-slate-300"
+              className={`w-full px-4 py-2.5 border rounded-xl text-[var(--text-primary)] bg-[var(--bg-surface-2)] focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 ${
+                errors[field.name] ? "border-danger-500/60 focus:ring-danger-500/30" : "border-[var(--border-subtle)] hover:border-[var(--border-default)]"
               }`}
               value={formData[field.name] || ""}
               onChange={(e) => handleChange(field.name, e.target.value)}
             >
-              <option value="">-- Select --</option>
+              <option value="">Select</option>
               {field.options?.map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {isUrdu ? (opt.labelUrdu ?? opt.label) : opt.label}
                 </option>
               ))}
             </select>
-            {errors[field.name] && <p className="mt-1.5 text-sm text-red-500">{errors[field.name]}</p>}
+            {errors[field.name] && <p className="mt-1.5 text-sm text-danger-500">{errors[field.name]}</p>}
           </div>
         );
 
@@ -128,10 +128,10 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
           <div key={field.name}>
             <Input type="number" label={label} required={field.required} placeholder={placeholder} value={rawVal} onChange={(e) => handleChange(field.name, e.target.value)} error={errors[field.name]} />
             {showPreview && (
-              <div className="mt-2 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-xs space-y-0.5">
-                <p className="font-semibold text-emerald-800">{formatPKR(numVal)} &mdash; {toPKWords(numVal)}</p>
+              <div className="mt-2 px-3 py-2 bg-success-500/10 border border-success-500/25 rounded-lg text-xs space-y-0.5 text-[var(--text-secondary)]">
+                <p className="font-semibold text-success-500">{formatPKR(numVal)}: {toPKWords(numVal)}</p>
                 {numVal >= 100000 && (
-                  <p className="text-emerald-600">Half: {formatPKR(numVal / 2)} &mdash; {toPKWords(numVal / 2)}</p>
+                  <p>Half: {formatPKR(numVal / 2)}, {toPKWords(numVal / 2)}</p>
                 )}
               </div>
             )}
@@ -174,11 +174,11 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
       {Object.entries(groups).map(([groupName, groupFields]) => (
         <div key={groupName} className="space-y-4">
           <div className="flex items-center gap-3">
-            <div className="h-px flex-1 bg-gradient-to-r from-slate-200 to-transparent" />
-            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider">
+            <div className="h-px flex-1 bg-[var(--border-subtle)]" />
+            <h3 className="text-sm font-bold text-[var(--text-tertiary)] uppercase tracking-wider">
               {groupName}
             </h3>
-            <div className="h-px flex-1 bg-gradient-to-l from-slate-200 to-transparent" />
+            <div className="h-px flex-1 bg-[var(--border-subtle)]" />
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {groupFields.map((field) => (
@@ -190,7 +190,7 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
         </div>
       ))}
 
-      <div className="flex flex-col sm:flex-row gap-3 pt-6 border-t border-slate-100">
+      <div className="flex flex-col sm:flex-row gap-3 pt-6 border-t border-[var(--border-subtle)]">
         <Button type="submit" loading={loading} size="lg" className="w-full sm:w-auto">
           {isUrdu ? "دستاویز بنائیں" : "Generate Document"}
         </Button>
