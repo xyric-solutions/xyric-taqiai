@@ -9,7 +9,7 @@ import {
   RefreshCw, FileText, Wand2, Printer, RotateCcw,
   ShieldCheck, AlertTriangle, PenLine,
 } from "lucide-react";
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const LEGAL_PAGE_WIDTH_MM = 215.9;
 const LEGAL_PAGE_HEIGHT_MM = 355.6;
@@ -45,7 +45,10 @@ export default function DocumentPreview({
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
 
   const cleanContent = (raw: string): string => {
-    return normalizeGeneratedHtml(raw);
+    return normalizeGeneratedHtml(raw, {
+      preserveEmptyBlocks: true,
+      preserveInlineStyles: true,
+    });
   };
 
   const [currentContent, setCurrentContent] = useState(cleanContent(content));
@@ -62,10 +65,16 @@ export default function DocumentPreview({
   const [showFullscreen, setShowFullscreen] = useState(false);
   const editRef = useRef<HTMLDivElement | null>(null);
 
-  // Update local state if parent content changes (only when not in the middle of AI edit)
-  if (content !== currentContent && !aiEditing) {
-    setCurrentContent(cleanContent(content));
-  }
+  useEffect(() => {
+    if (aiEditing) return;
+
+    const nextContent = cleanContent(content);
+    if (nextContent === currentContent) return;
+
+    setCurrentContent(nextContent);
+    setEditedContent(nextContent);
+    setEditKey((k) => k + 1);
+  }, [aiEditing, content, currentContent]);
 
   const getLatestContent = (): string => editRef.current?.innerHTML ?? currentContent;
 
@@ -303,6 +312,13 @@ h1,h2,h3,h4 { break-after:avoid; }
 
   const saveEdit = () => {
     const newHtml = editRef.current?.innerHTML ?? editedContent;
+    setCurrentContent(newHtml);
+    setEditedContent(newHtml);
+    onContentChange?.(newHtml);
+  };
+
+  const handleEditableInput = () => {
+    const newHtml = editRef.current?.innerHTML ?? "";
     setCurrentContent(newHtml);
     setEditedContent(newHtml);
     onContentChange?.(newHtml);
@@ -662,6 +678,7 @@ h1,h2,h3,h4 { break-after:avoid; }
               ref={editRef}
               contentEditable
               suppressContentEditableWarning
+              onInput={handleEditableInput}
               dir={language === "ur" ? "rtl" : "ltr"}
               className="focus:outline-none focus:ring-2 focus:ring-primary-500/20 [&_*]:text-black [&_a]:no-underline"
               style={{

@@ -3,11 +3,9 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
-import { Send, Scale, Trash2, ExternalLink, Sparkles, BookOpen, ChevronRight, Mic, ImagePlus, X, ThumbsUp, ThumbsDown, Pencil, BookmarkPlus, AlertTriangle, Check, Plus, History, HelpCircle } from "lucide-react";
+import { Send, Scale, Trash2, ExternalLink, Sparkles, BookOpen, ChevronRight, Mic, ImagePlus, X, Pencil, AlertTriangle, Plus, History, HelpCircle } from "lucide-react";
 import { detectIntent, detectAllIntents, getIntentMeta, getIntentSystemPrompt } from "@/lib/intent-detection";
 import Link from "next/link";
-
-type ApprovalStatus = "pending" | "approved" | "rejected" | "edited";
 
 interface GroundingSource {
   id: number;
@@ -22,12 +20,8 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   image?: string;
-  // S04-03: approval workflow
-  approval?: ApprovalStatus;
   // S04-05: uncertainty flag
   isUncertain?: boolean;
-  // S04-07: saved as note
-  savedAsNote?: boolean;
   // verified judgments retrieved from the corpus that grounded this answer
   sources?: GroundingSource[];
 }
@@ -113,9 +107,6 @@ export default function AIAdvisorPage() {
   const [recordSeconds, setRecordSeconds] = useState(0);
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelledRef = useRef(false);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [editValue, setEditValue] = useState("");
-
   // Keep the view pinned to the latest message, but smoothly:
   //  - use "auto" (instant) while streaming so per-token "smooth" animations
   //    don't pile up and stutter; "smooth" only when a turn finishes.
@@ -557,7 +548,7 @@ export default function AIAdvisorPage() {
 
       // Add an empty assistant message that we fill as the stream arrives.
       // It is always the last message, so we patch it by last index.
-      setMessages((prev) => [...prev, { role: "assistant", content: "", approval: "pending", isUncertain: false, sources: [] }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: "", isUncertain: false, sources: [] }]);
       const updateLast = (patch: Partial<Message>) =>
         setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? { ...m, ...patch } : m)));
 
@@ -631,23 +622,6 @@ export default function AIAdvisorPage() {
     ];
     return patterns.some((p) => p.test(text));
   };
-
-  // S04-03: Approval workflow handlers
-  const handleApprove = (i: number) =>
-    setMessages((prev) => prev.map((m, idx) => (idx === i ? { ...m, approval: "approved" as ApprovalStatus } : m)));
-
-  const handleReject = (i: number) =>
-    setMessages((prev) => prev.map((m, idx) => (idx === i ? { ...m, approval: "rejected" as ApprovalStatus } : m)));
-
-  const handleEditSave = (i: number) => {
-    setMessages((prev) => prev.map((m, idx) => (idx === i ? { ...m, content: editValue, approval: "edited" as ApprovalStatus } : m)));
-    setEditingIndex(null);
-    setEditValue("");
-  };
-
-  // S04-07: Save as Note
-  const handleSaveNote = (i: number) =>
-    setMessages((prev) => prev.map((m, idx) => (idx === i ? { ...m, savedAsNote: true } : m)));
 
   // S04-02: Render message content with citation block highlighted
   const renderMessageContent = (content: string, isUser: boolean): React.ReactNode => {
@@ -820,7 +794,7 @@ export default function AIAdvisorPage() {
             </div>
             AI Legal <span className="text-primary-400">Advisor</span>
           </h1>
-          <p className="text-sm mt-1" style={{ color: "var(--text-tertiary)" }}>Ask about Pakistani law — PPC, CrPC, CPC, Family Laws &amp; more</p>
+          <p className="text-sm mt-1" style={{ color: "var(--text-tertiary)" }}>Ask about Pakistani law or which Taqi AI feature to use</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => setHistoryOpen((v) => !v)}>
@@ -920,58 +894,27 @@ export default function AIAdvisorPage() {
                     </div>
                   )}
 
-                  {/* Message bubble or edit form */}
-                  {editingIndex === i ? (
-                    <div className="max-w-[92%] w-full space-y-2">
-                      <textarea
-                        value={editValue}
-                        onChange={(e) => setEditValue(e.target.value)}
-                        className="w-full p-3 text-sm rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500/30 min-h-[100px] resize-y border border-primary-500/40"
-                        style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)" }}
-                        autoFocus
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleEditSave(i)}
-                          className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary-500 hover:bg-primary-400 rounded-lg font-semibold transition-colors"
-                          style={{ color: "var(--text-inverse)" }}
-                        >
-                          <Check className="h-3 w-3" /> Save Edit
-                        </button>
-                        <button
-                          onClick={() => { setEditingIndex(null); setEditValue(""); }}
-                          className="px-3 py-1.5 text-xs rounded-lg font-medium transition-colors border"
-                          style={{ color: "var(--text-secondary)", borderColor: "var(--border-default)", background: "var(--bg-surface-2)" }}
-                        >
-                          Cancel
-                        </button>
+                  {/* Message bubble */}
+                  <div
+                    className={`max-w-[92%] rounded-2xl px-4 py-3 border ${
+                      msg.role === "user"
+                        ? "bg-gradient-to-br from-primary-500 to-primary-600 rounded-br-md border-primary-400/30"
+                        : "rounded-bl-md"
+                    }`}
+                    style={msg.role === "user"
+                      ? { color: "var(--text-inverse)", boxShadow: "var(--glow-cyan-sm)" }
+                      : { background: "var(--bg-surface-2)", color: "var(--text-primary)", borderColor: "var(--border-subtle)" }}
+                  >
+                    {msg.image && (
+                      <div className="mb-2">
+                        <img src={msg.image} alt="Uploaded document" className="max-w-[200px] max-h-[200px] rounded-lg border border-white/20 object-cover" />
                       </div>
-                    </div>
-                  ) : (
-                    <div
-                      className={`max-w-[92%] rounded-2xl px-4 py-3 border ${
-                        msg.role === "user"
-                          ? "bg-gradient-to-br from-primary-500 to-primary-600 rounded-br-md border-primary-400/30"
-                          : `rounded-bl-md ${msg.approval === "rejected" ? "opacity-50" : ""}`
-                      }`}
-                      style={msg.role === "user"
-                        ? { color: "var(--text-inverse)", boxShadow: "var(--glow-cyan-sm)" }
-                        : { background: "var(--bg-surface-2)", color: "var(--text-primary)", borderColor: "var(--border-subtle)" }}
-                    >
-                      {msg.image && (
-                        <div className="mb-2">
-                          <img src={msg.image} alt="Uploaded document" className="max-w-[200px] max-h-[200px] rounded-lg border border-white/20 object-cover" />
-                        </div>
-                      )}
-                      <div className="text-sm leading-relaxed">{renderMessageContent(msg.content, msg.role === "user")}</div>
-                      {msg.approval === "edited" && (
-                        <span className="text-[9px] text-primary-500 font-medium block mt-1">✎ Edited</span>
-                      )}
-                    </div>
-                  )}
+                    )}
+                    <div className="text-sm leading-relaxed">{renderMessageContent(msg.content, msg.role === "user")}</div>
+                  </div>
 
                   {/* Verified judgments from the corpus that grounded this answer */}
-                  {msg.role === "assistant" && editingIndex !== i && msg.sources && msg.sources.length > 0 && (
+                  {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
                     <div className="max-w-[92%] mt-1.5 p-2.5 rounded-xl" style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)" }}>
                       <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1" style={{ color: "var(--text-tertiary)" }}>
                         <BookOpen className="h-3 w-3 text-success-500" /> Verified from your archive
@@ -997,7 +940,7 @@ export default function AIAdvisorPage() {
                   )}
 
                   {/* S04-08: Mandatory disclaimer on every AI response */}
-                  {msg.role === "assistant" && editingIndex !== i && (
+                  {msg.role === "assistant" && (
                     <div className="max-w-[92%] mt-1 flex items-start gap-1.5 px-2 py-1.5 bg-warning-500/10 border border-warning-500/25 rounded-xl">
                       <span className="text-warning-500 text-[10px] mt-0.5 flex-shrink-0">⚠</span>
                       <p className="text-[10px] leading-tight" style={{ color: "var(--text-secondary)" }}>
@@ -1006,60 +949,6 @@ export default function AIAdvisorPage() {
                     </div>
                   )}
 
-                  {/* S04-03: Approve / Edit / Reject buttons */}
-                  {msg.role === "assistant" && editingIndex !== i && msg.approval === "pending" && (
-                    <div className="max-w-[92%] mt-1.5 flex items-center gap-1.5">
-                      <button
-                        onClick={() => handleApprove(i)}
-                        className="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-lg bg-success-500/10 text-success-500 border border-success-500/25 hover:bg-success-500/20 font-medium transition-colors"
-                      >
-                        <ThumbsUp className="h-3 w-3" /> Approve
-                      </button>
-                      <button
-                        onClick={() => { setEditingIndex(i); setEditValue(msg.content); }}
-                        className="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-lg bg-primary-500/10 text-primary-300 border border-primary-500/25 hover:bg-primary-500/20 font-medium transition-colors"
-                      >
-                        <Pencil className="h-3 w-3" /> Edit
-                      </button>
-                      <button
-                        onClick={() => handleReject(i)}
-                        className="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-lg bg-danger-500/10 text-danger-500 border border-danger-500/25 hover:bg-danger-500/20 font-medium transition-colors"
-                      >
-                        <ThumbsDown className="h-3 w-3" /> Reject
-                      </button>
-                    </div>
-                  )}
-
-                  {/* S04-03: Approved status + S04-07: Save as Note */}
-                  {msg.role === "assistant" && editingIndex !== i && (msg.approval === "approved" || msg.approval === "edited") && (
-                    <div className="max-w-[92%] mt-1.5 flex items-center gap-2">
-                      <span className="flex items-center gap-1 text-[10px] text-success-500 font-medium">
-                        <Check className="h-3 w-3" /> Approved
-                      </span>
-                      {!msg.savedAsNote ? (
-                        <button
-                          onClick={() => handleSaveNote(i)}
-                          className="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-lg border font-medium transition-colors hover:bg-[var(--bg-surface-3)]"
-                          style={{ background: "var(--bg-surface-2)", color: "var(--text-secondary)", borderColor: "var(--border-default)" }}
-                        >
-                          <BookmarkPlus className="h-3 w-3" /> Save locally
-                        </button>
-                      ) : (
-                        <span className="flex items-center gap-1 text-[10px] text-primary-400 font-medium">
-                          <BookmarkPlus className="h-3 w-3" /> Note saved locally
-                        </span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* S04-03: Rejected status */}
-                  {msg.role === "assistant" && editingIndex !== i && msg.approval === "rejected" && (
-                    <div className="max-w-[92%] mt-1">
-                      <span className="flex items-center gap-1 text-[10px] text-danger-500 font-medium">
-                        <ThumbsDown className="h-3 w-3" /> Rejected
-                      </span>
-                    </div>
-                  )}
                 </div>
               ))
             )}
@@ -1194,7 +1083,7 @@ export default function AIAdvisorPage() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-                  placeholder="Ask about Pakistani law... / پاکستانی قانون کے بارے میں پوچھیں..."
+                  placeholder="Ask about Pakistani law or Taqi AI features..."
                   className="flex-1 px-4 py-2.5 rounded-xl text-sm border focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500/50 transition-colors"
                   style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", borderColor: "var(--border-default)" }}
                   disabled={loading}

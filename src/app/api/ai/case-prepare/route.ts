@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { searchCandidatesFast, getLocalJudgmentById } from "@/lib/judgment-db";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { buildNoJudgmentLegalStrategy, findCaseIntakeProfile } from "@/lib/case-builder-knowledge";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -170,6 +171,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Law section(s) or case type is required." }, { status: 400 });
   }
 
+  const knowledgeProfile = findCaseIntakeProfile({ sections, facts, documentNeeded });
+
   // Step 1: Extract search terms from case details
   const directSectionTerms = sections
     .split(/[,;\s]+/)
@@ -210,13 +213,13 @@ Rules:
     searchTerms = {
       primaryTerms: Array.from(new Set([...directSectionTerms, ...caseTypeHint.terms])).slice(0, 4),
       secondaryTerms: [],
-      clientPosition: caseTypeHint.position || "defence",
+      clientPosition: caseTypeHint.position || knowledgeProfile?.clientPosition || "defence",
     };
   } else if (caseTypeHint.terms.length > 0) {
     searchTerms = {
       primaryTerms: caseTypeHint.terms,
       secondaryTerms: [],
-      clientPosition: caseTypeHint.position || "defence",
+      clientPosition: caseTypeHint.position || knowledgeProfile?.clientPosition || "defence",
     };
   } else {
     try {
@@ -228,19 +231,20 @@ Rules:
       searchTerms = {
         primaryTerms: deterministicTerms.slice(0, 4),
         secondaryTerms: [],
-        clientPosition: "defence",
+        clientPosition: knowledgeProfile?.clientPosition || "defence",
       };
     }
   }
   searchTerms = {
     primaryTerms: uniqueTerms([
+      ...(knowledgeProfile?.searchTerms || []),
       ...directSectionTerms,
       ...caseTypeHint.terms,
       ...deterministicTerms,
       ...(Array.isArray(searchTerms.primaryTerms) ? searchTerms.primaryTerms : []),
     ], 6),
     secondaryTerms: uniqueTerms(Array.isArray(searchTerms.secondaryTerms) ? searchTerms.secondaryTerms : [], 3),
-    clientPosition: searchTerms.clientPosition || caseTypeHint.position || "defence",
+    clientPosition: searchTerms.clientPosition || caseTypeHint.position || knowledgeProfile?.clientPosition || "defence",
   };
 
   // Step 2: Search DB with extracted terms
@@ -259,7 +263,7 @@ Rules:
       searchTerms,
       totalCandidates: 0,
       judgments: [],
-      legalStrategy: "No judgments found in the database for these search terms. Try different section numbers, case type, or broader legal keywords.",
+      legalStrategy: buildNoJudgmentLegalStrategy(knowledgeProfile, sections),
     });
   }
 

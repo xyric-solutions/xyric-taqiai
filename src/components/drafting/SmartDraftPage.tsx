@@ -49,6 +49,49 @@ interface AttachedFile {
   preview?: string;
 }
 
+const DRAFT_STORAGE_VERSION = 1;
+const DRAFT_STORAGE_PREFIX = "taqi-ai-smart-draft";
+
+interface PersistedSmartDraft {
+  version: number;
+  savedAt: number;
+  category: string;
+  stage: Stage;
+  userRequest: string;
+  extraInstructions: string;
+  language: string;
+  documentType: string;
+  documentTypeUrdu: string;
+  questions: Question[];
+  answers: Record<string, string>;
+  sectionWarning: string | null;
+  sectionWarningDismissed: boolean;
+  generatedHtml: string;
+  savedDocId: string | null;
+  draftTitle: string;
+  blankCount: number;
+  moreInstruction: string;
+  extractedContext: string;
+}
+
+function getRestorableStage(draft: PersistedSmartDraft): Stage {
+  if (draft.stage === "done" && draft.generatedHtml.trim()) return "done";
+  if (draft.stage === "asking" || draft.stage === "confirm") return draft.stage;
+  return "input";
+}
+
+function hasPersistableDraft(draft: PersistedSmartDraft): boolean {
+  return Boolean(
+    draft.userRequest.trim() ||
+    draft.extraInstructions.trim() ||
+    draft.generatedHtml.trim() ||
+    draft.moreInstruction.trim() ||
+    draft.extractedContext.trim() ||
+    draft.questions.length > 0 ||
+    Object.values(draft.answers).some((value) => value.trim())
+  );
+}
+
 interface SmartDraftPageProps {
   title: string;
   titleUrdu: string;
@@ -124,7 +167,13 @@ export default function SmartDraftPage({
   // done stage
   const [generatedHtml, setGeneratedHtml] = useState("");
   const [savedDocId, setSavedDocId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
   const [blankCount, setBlankCount] = useState(0);
+  const savedDocIdRef = useRef<string | null>(null);
+  const latestGeneratedHtmlRef = useRef("");
+  const documentSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [draftStorageKey, setDraftStorageKey] = useState<string | null>(null);
+  const [draftHydrated, setDraftHydrated] = useState(false);
 
   // "More changes" bar
   const [moreInstruction, setMoreInstruction] = useState("");
@@ -150,6 +199,168 @@ export default function SmartDraftPage({
   const [sameTypingPreview, setSameTypingPreview] = useState<string | null>(null);
   const [sameTypingLoading, setSameTypingLoading] = useState(false);
   const sameTypingInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    savedDocIdRef.current = savedDocId;
+  }, [savedDocId]);
+
+  useEffect(() => {
+    latestGeneratedHtmlRef.current = generatedHtml;
+  }, [generatedHtml]);
+
+  useEffect(() => {
+    return () => {
+      if (documentSaveTimerRef.current) {
+        clearTimeout(documentSaveTimerRef.current);
+      }
+
+      const docId = savedDocIdRef.current;
+      const html = latestGeneratedHtmlRef.current;
+      if (docId && html.trim()) {
+        void updateDocumentContent(docId, html);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function resolveDraftOwner() {
+      let owner = "guest";
+      try {
+        const res = await fetch("/api/auth/session", { credentials: "include" });
+        if (res.ok) {
+          const data = await res.json() as { user?: { id?: string; email?: string } | null };
+          owner = data.user?.id || data.user?.email || owner;
+        }
+      } catch {
+        // Offline or unauthenticated users still get local draft recovery.
+      }
+
+      if (!cancelled) {
+        setDraftStorageKey(`${DRAFT_STORAGE_PREFIX}:${category}:${owner}`);
+      }
+    }
+
+    void resolveDraftOwner();
+    return () => { cancelled = true; };
+  }, [category]);
+
+  useEffect(() => {
+    if (!draftStorageKey || draftHydrated) return;
+
+    let restored = false;
+    try {
+      const raw = localStorage.getItem(draftStorageKey);
+      if (raw) {
+        const draft = JSON.parse(raw) as PersistedSmartDraft;
+        if (
+          draft.version === DRAFT_STORAGE_VERSION &&
+          draft.category === category &&
+          hasPersistableDraft(draft)
+        ) {
+          setStage(getRestorableStage(draft));
+          setUserRequest(draft.userRequest || "");
+          setExtraInstructions(draft.extraInstructions || "");
+          setLanguage(draft.language || "en");
+          setDocumentType(draft.documentType || "");
+          setDocumentTypeUrdu(draft.documentTypeUrdu || "");
+          setQuestions(Array.isArray(draft.questions) ? draft.questions : []);
+          setAnswers(draft.answers || {});
+          setSectionWarning(draft.sectionWarning || null);
+          setSectionWarningDismissed(Boolean(draft.sectionWarningDismissed));
+          setGeneratedHtml(draft.generatedHtml || "");
+          latestGeneratedHtmlRef.current = draft.generatedHtml || "";
+          setSavedDocId(draft.savedDocId || null);
+          savedDocIdRef.current = draft.savedDocId || null;
+          setDraftTitle(draft.draftTitle || "");
+          setBlankCount(draft.blankCount || 0);
+          setMoreInstruction(draft.moreInstruction || "");
+          setExtractedContext(draft.extractedContext || "");
+          setLoading(false);
+          setError(null);
+          restored = true;
+        }
+      }
+    } catch {
+      localStorage.removeItem(draftStorageKey);
+    }
+
+    if (!restored) {
+      const draft = new URLSearchParams(window.location.search).get("draft");
+      if (draft) {
+        justSelectedRef.current = true; // it's a chosen document, don't pop the dropdown
+        setUserRequest(draft);
+      }
+    }
+
+    setDraftHydrated(true);
+  }, [category, draftHydrated, draftStorageKey]);
+
+  const buildDraftSnapshot = useCallback((): PersistedSmartDraft => ({
+    version: DRAFT_STORAGE_VERSION,
+    savedAt: Date.now(),
+    category,
+    stage,
+    userRequest,
+    extraInstructions,
+    language,
+    documentType,
+    documentTypeUrdu,
+    questions,
+    answers,
+    sectionWarning,
+    sectionWarningDismissed,
+    generatedHtml,
+    savedDocId,
+    draftTitle,
+    blankCount,
+    moreInstruction,
+    extractedContext,
+  }), [
+    answers,
+    blankCount,
+    category,
+    documentType,
+    documentTypeUrdu,
+    draftTitle,
+    extraInstructions,
+    extractedContext,
+    generatedHtml,
+    language,
+    moreInstruction,
+    questions,
+    savedDocId,
+    sectionWarning,
+    sectionWarningDismissed,
+    stage,
+    userRequest,
+  ]);
+
+  const persistDraftSnapshot = useCallback(() => {
+    if (!draftStorageKey || !draftHydrated) return;
+
+    const draft = buildDraftSnapshot();
+    try {
+      if (hasPersistableDraft(draft)) {
+        localStorage.setItem(draftStorageKey, JSON.stringify(draft));
+      } else {
+        localStorage.removeItem(draftStorageKey);
+      }
+    } catch {
+      // If storage is full, the database save still protects generated documents.
+    }
+  }, [buildDraftSnapshot, draftHydrated, draftStorageKey]);
+
+  useEffect(() => {
+    persistDraftSnapshot();
+  }, [persistDraftSnapshot]);
+
+  useEffect(() => {
+    if (!draftHydrated) return;
+    window.addEventListener("pagehide", persistDraftSnapshot);
+    return () => window.removeEventListener("pagehide", persistDraftSnapshot);
+  }, [draftHydrated, persistDraftSnapshot]);
 
   // ── Voice helpers ──
   const startVoice = (targetId: string) => {
@@ -227,15 +438,6 @@ export default function SmartDraftPage({
     );
   };
 
-  // ── Prefill from global search (?draft=<document name>) ──
-  useEffect(() => {
-    const draft = new URLSearchParams(window.location.search).get("draft");
-    if (draft) {
-      justSelectedRef.current = true; // it's a chosen document, don't pop the dropdown
-      setUserRequest(draft);
-    }
-  }, []);
-
   // ── Autocomplete debounce ──
   // Suggestions are a local in-memory filter, so keep the delay tiny for instant feel
   useEffect(() => {
@@ -273,9 +475,22 @@ export default function SmartDraftPage({
   };
 
   const reset = () => {
+    if (draftStorageKey) {
+      localStorage.removeItem(draftStorageKey);
+    }
+    if (documentSaveTimerRef.current) {
+      clearTimeout(documentSaveTimerRef.current);
+      documentSaveTimerRef.current = null;
+    }
     setStage("input");
+    setUserRequest("");
     setGeneratedHtml("");
     setSavedDocId(null);
+    savedDocIdRef.current = null;
+    latestGeneratedHtmlRef.current = "";
+    setDraftTitle("");
+    setDocumentType("");
+    setDocumentTypeUrdu("");
     setAnswers({});
     setQuestions([]);
     setError(null);
@@ -451,10 +666,32 @@ export default function SmartDraftPage({
     }
   };
 
+  const handleGeneratedContentChange = useCallback((html: string) => {
+    setGeneratedHtml(html);
+    latestGeneratedHtmlRef.current = html;
+
+    if (documentSaveTimerRef.current) {
+      clearTimeout(documentSaveTimerRef.current);
+    }
+
+    documentSaveTimerRef.current = setTimeout(() => {
+      const docId = savedDocIdRef.current;
+      const latestHtml = latestGeneratedHtmlRef.current;
+      if (docId && latestHtml.trim()) {
+        void updateDocumentContent(docId, latestHtml);
+      }
+    }, 500);
+  }, []);
+
   const saveAndShowDocument = async (html: string, docTitle: string) => {
     setGeneratedHtml(html);
+    latestGeneratedHtmlRef.current = html;
+    setDraftTitle(docTitle);
     const saved = await saveDocument({ title: docTitle, category, subType: "smart-draft", language, content: html });
-    if (saved) setSavedDocId(saved.id);
+    if (saved) {
+      setSavedDocId(saved.id);
+      savedDocIdRef.current = saved.id;
+    }
     setStage("done");
   };
 
@@ -472,6 +709,7 @@ export default function SmartDraftPage({
       if (!res.ok) throw new Error(data.error || "Edit failed");
       const newHtml = data.html || data.text || data.response || generatedHtml;
       setGeneratedHtml(newHtml);
+      latestGeneratedHtmlRef.current = newHtml;
       if (savedDocId) await updateDocumentContent(savedDocId, newHtml);
       setMoreInstruction("");
     } catch (err) {
@@ -490,17 +728,14 @@ export default function SmartDraftPage({
           <Button variant="outline" size="sm" onClick={reset}>
             <ArrowLeft className="h-4 w-4" /> New Document
           </Button>
-          {documentType && <span className="text-[var(--text-tertiary)] text-sm">{documentType}</span>}
+          {(draftTitle || documentType) && <span className="text-[var(--text-tertiary)] text-sm">{draftTitle || documentType}</span>}
         </div>
 
         <DocumentPreview
           content={generatedHtml}
-          title={documentType || title}
+          title={draftTitle || documentType || title}
           language={language}
-          onContentChange={(c) => {
-            setGeneratedHtml(c);
-            if (savedDocId) void updateDocumentContent(savedDocId, c);
-          }}
+          onContentChange={handleGeneratedContentChange}
         />
         <Card className="p-4 space-y-3">
           <p className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">

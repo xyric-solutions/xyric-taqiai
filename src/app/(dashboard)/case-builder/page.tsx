@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { saveDocument, updateDocumentContent } from "@/lib/document-store";
 import DocumentPreview from "@/components/documents/DocumentPreview";
 import Card from "@/components/ui/Card";
@@ -10,11 +10,12 @@ import {
   Search, Sparkles, ArrowLeft, Scale, BookOpen,
   ChevronRight, TrendingUp, TrendingDown, Minus,
   FileText, AlertTriangle, Eye, Plus, Trash2, X, HelpCircle,
+  Mic, Square, Loader2,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type Stage = "input" | "confirm" | "intake" | "parties" | "researching" | "results" | "asking" | "generating" | "done";
+type Stage = "input" | "confirm" | "details" | "parties" | "researching" | "results" | "asking" | "generating" | "done";
 
 interface PreparedJudgment {
   id: number;
@@ -89,17 +90,7 @@ function StanceBadge({ stance }: { stance: PreparedJudgment["stance"] }) {
   );
 }
 
-function Dots() {
-  return (
-    <div className="flex items-center gap-1.5">
-      {[0, 150, 300].map((d) => (
-        <div key={d} className="w-2 h-2 rounded-full animate-bounce" style={{ background: "var(--primary-500)", animationDelay: `${d}ms` }} />
-      ))}
-    </div>
-  );
-}
-
-const WIZARD_STEPS = ["Case", "Confirm", "Details", "Parties"];
+const WIZARD_STEPS = ["Case", "Confirm", "Details", "Client"];
 
 // Compact 4-step progress indicator shown across the guided input flow.
 function Stepper({ current }: { current: number }) {
@@ -224,6 +215,13 @@ export default function CaseBuilderPage() {
   const [selectedMoreLoading, setSelectedMoreLoading] = useState(false);
   const [selectedMoreHasMore, setSelectedMoreHasMore] = useState(true);
   const [selectedMoreRelated, setSelectedMoreRelated] = useState(false);
+  const [backgroundRecording, setBackgroundRecording] = useState(false);
+  const [backgroundTranscribing, setBackgroundTranscribing] = useState(false);
+  const [backgroundRecordSeconds, setBackgroundRecordSeconds] = useState(0);
+  const backgroundRecorderRef = useRef<MediaRecorder | null>(null);
+  const backgroundChunksRef = useRef<Blob[]>([]);
+  const backgroundStreamRef = useRef<MediaStream | null>(null);
+  const backgroundTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const providedDetails = [
     { label: "Law Sections / Case Type", value: sections },
@@ -256,6 +254,119 @@ export default function CaseBuilderPage() {
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
+  useEffect(() => {
+    return () => {
+      if (backgroundTimerRef.current) clearInterval(backgroundTimerRef.current);
+      backgroundStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  const formatRecordingTime = (seconds: number) => {
+    const minutes = Math.floor(seconds / 60);
+    const remaining = seconds % 60;
+    return `${minutes}:${remaining.toString().padStart(2, "0")}`;
+  };
+
+  const blobToBase64 = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string).split(",")[1] || "");
+      reader.onerror = () => reject(new Error("Could not read the recording."));
+      reader.readAsDataURL(blob);
+    });
+
+  const appendBackgroundTranscript = (text: string) => {
+    const clean = text.trim();
+    if (!clean) return;
+    setFacts((prev) => {
+      const current = prev.trim();
+      return current ? `${current}\n\n${clean}` : clean;
+    });
+  };
+
+  const transcribeBackgroundRecording = async (audioBlob: Blob) => {
+    setBackgroundTranscribing(true);
+    setError(null);
+    try {
+      if (audioBlob.size === 0) throw new Error("Recording was empty. Please try again.");
+      const base64Audio = await blobToBase64(audioBlob);
+      const res = await fetch("/api/ai/voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ audio: base64Audio, mimeType: audioBlob.type || "audio/webm" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+      if (!res.ok) throw new Error(data.error || "Transcription failed. Please try again.");
+      if (!data.text?.trim()) throw new Error("No speech was detected. Please speak clearly and try again.");
+      appendBackgroundTranscript(data.text);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Voice transcription failed. Please try again.");
+    } finally {
+      setBackgroundTranscribing(false);
+      backgroundChunksRef.current = [];
+    }
+  };
+
+  const startBackgroundRecording = async () => {
+    if (backgroundRecording || backgroundTranscribing) return;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setError("Microphone is available only on localhost or HTTPS. Open the app securely and try again.");
+      return;
+    }
+
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      backgroundStreamRef.current = stream;
+      const candidates = ["audio/webm", "audio/mp4", "audio/ogg"];
+      const supported = candidates.find(
+        (type) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported?.(type),
+      );
+      const recorder = supported ? new MediaRecorder(stream, { mimeType: supported }) : new MediaRecorder(stream);
+      backgroundRecorderRef.current = recorder;
+      backgroundChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) backgroundChunksRef.current.push(event.data);
+      };
+
+      recorder.onstop = () => {
+        if (backgroundTimerRef.current) {
+          clearInterval(backgroundTimerRef.current);
+          backgroundTimerRef.current = null;
+        }
+        stream.getTracks().forEach((track) => track.stop());
+        backgroundStreamRef.current = null;
+        setBackgroundRecording(false);
+        setBackgroundRecordSeconds(0);
+        const audioBlob = new Blob(backgroundChunksRef.current, { type: recorder.mimeType || supported || "audio/webm" });
+        void transcribeBackgroundRecording(audioBlob);
+      };
+
+      recorder.start();
+      setBackgroundRecording(true);
+      setBackgroundRecordSeconds(0);
+      backgroundTimerRef.current = setInterval(() => setBackgroundRecordSeconds((seconds) => seconds + 1), 1000);
+    } catch (err) {
+      const name = err instanceof Error ? err.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        setError("Microphone permission denied. Allow mic access in your browser, then try again.");
+      } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        setError("No microphone found. Connect a microphone and try again.");
+      } else {
+        setError("Could not start recording. Please check your microphone and try again.");
+      }
+      backgroundStreamRef.current?.getTracks().forEach((track) => track.stop());
+      backgroundStreamRef.current = null;
+    }
+  };
+
+  const stopBackgroundRecording = () => {
+    if (!backgroundRecorderRef.current || backgroundRecorderRef.current.state !== "recording") return;
+    backgroundRecorderRef.current.stop();
+  };
+
   // Fold the confirmed section purpose + section-specific intake answers into the
   // facts, so both research and drafting see the concrete case details.
   const composeFacts = () => {
@@ -267,6 +378,17 @@ export default function CaseBuilderPage() {
       .filter(Boolean) as string[];
     if (qa.length) parts.push(qa.join("\n"));
     return parts.join("\n");
+  };
+
+  const handleContinueFromDetails = () => {
+    const missing = intakeQuestions.filter((q) => q.required && !intakeAnswers[q.id]?.trim());
+    if (missing.length > 0) {
+      const names = missing.slice(0, 3).map((q) => q.label).join(", ");
+      setError(`Please answer the required case detail${missing.length > 1 ? "s" : ""}: ${names}${missing.length > 3 ? "..." : ""}`);
+      return;
+    }
+    setError(null);
+    setStage("parties");
   };
 
   // Step 0a: user clicked "Research" — first confirm what the section is about.
@@ -287,9 +409,12 @@ export default function CaseBuilderPage() {
       setSectionPurpose(data.interpretation || sections);
       setStage("confirm");
     } catch {
-      // If interpretation fails, don't block the lawyer — skip the AI steps and
-      // let them fill party/court details, then research.
-      setStage("parties");
+      // If interpretation fails, keep the same wizard order and let the lawyer
+      // confirm the matter in their own words.
+      setSectionInterpretation("");
+      setSectionAlternatives([]);
+      setSectionPurpose(sections);
+      setStage("confirm");
     } finally {
       setIntakeLoading(false);
     }
@@ -308,16 +433,13 @@ export default function CaseBuilderPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not build questions");
       const qs: Question[] = Array.isArray(data.questions) ? data.questions : [];
-      if (qs.length === 0) {
-        // Nothing case-specific to ask — move on to party/court details.
-        setStage("parties");
-        return;
-      }
       setIntakeQuestions(qs);
       setIntakeAnswers({});
-      setStage("intake");
+      setStage("details");
     } catch {
-      setStage("parties");
+      setIntakeQuestions([]);
+      setIntakeAnswers({});
+      setStage("details");
     } finally {
       setIntakeLoading(false);
     }
@@ -488,6 +610,9 @@ export default function CaseBuilderPage() {
     const usable = [...favorable, ...neutral].slice(0, 5);
 
     const citationList = usable.map((j) => `${j.citation} (${j.court}, ${j.year})`).join("; ");
+    const researchBasis = usable.length > 0
+      ? `Actual cited judgments from the local database for research guidance only: ${citationList}`
+      : `No actual matching judgments were found in the local database. Build the case from the applicable statutes, legal ingredients, collected facts, analogous legal principles, and AI-generated legal reasoning. Do not invent or fabricate citations. Clearly distinguish AI-generated legal reasoning from actual cited judgments. Strategy: ${result.legalStrategy}`;
     const docRequest = documentNeeded
       ? `Draft a ${documentNeeded} for a case involving ${sections}.`
       : `Draft a legal document for a case involving ${sections}.`;
@@ -510,7 +635,7 @@ export default function CaseBuilderPage() {
 
     const richRequest = `${docRequest}
 ${alreadyKnown ? `\nALREADY PROVIDED — do NOT ask for these again:\n${alreadyKnown}\n` : ""}
-Supporting Judgments for research guidance only: ${citationList || "None"}
+${researchBasis}
 Do not add a standalone reliance/citation paragraph such as "In this regard, reliance is placed..." unless the user expressly asks for authorities to be cited.
 Court heading policy: Use only the provided Court Name and District/City. Never assume Lahore or any other city.
 Client Position: ${result.searchTerms.clientPosition}`;
@@ -597,6 +722,9 @@ Client Position: ${result.searchTerms.clientPosition}`;
     const usable = [...favorable, ...neutral].slice(0, 5);
 
     const citationList = usable.map((j) => `${j.citation} (${j.court}, ${j.year})`).join("; ");
+    const researchBasis = usable.length > 0
+      ? `Actual cited judgments from the local database for research guidance only: ${citationList}`
+      : `No actual matching judgments were found in the local database. Build the case from the applicable statutes, legal ingredients, collected facts, analogous legal principles, and AI-generated legal reasoning. Do not invent or fabricate citations. Clearly distinguish AI-generated legal reasoning from actual cited judgments. Strategy: ${result.legalStrategy}`;
     const docRequest = documentNeeded
       ? `Draft a ${documentNeeded} for a case involving ${sections}.`
       : `Draft a legal document for a case involving ${sections}.`;
@@ -619,7 +747,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
 
     const richRequest = `${docRequest}
 ${alreadyKnown2 ? `\nALREADY PROVIDED — do NOT ask for these again:\n${alreadyKnown2}\n` : ""}
-Supporting Judgments for research guidance only: ${citationList || "None"}
+${researchBasis}
 Do not add a standalone reliance/citation paragraph such as "In this regard, reliance is placed..." unless the user expressly asks for authorities to be cited.
 Court heading policy: Use only the provided Court Name and District/City. Never assume Lahore or any other city.
 Client Position: ${result.searchTerms.clientPosition}`;
@@ -629,7 +757,11 @@ Client Position: ${result.searchTerms.clientPosition}`;
       ...(usable.length > 0 ? {
         research_guidance_from_judgments: usable.map((j) => `${j.citation} — ${j.ratio}`).join("; "),
         citation_policy: "Use these judgments only as drafting guidance. Do not insert a generic reliance paragraph or citation list unless the user expressly asks for authorities.",
-      } : {}),
+      } : {
+        no_matching_judgments: "No actual matching judgments were found in the local database.",
+        ai_generated_legal_reasoning: result.legalStrategy,
+        citation_policy: "Do not invent citations. Use statutory ingredients and AI-generated legal reasoning only, clearly separated from any actual cited judgment.",
+      }),
     };
 
     try {
@@ -951,11 +1083,27 @@ Client Position: ${result.searchTerms.clientPosition}`;
 
         {/* No results */}
         {result.judgments.length === 0 ? (
-          <Card className="p-8 text-center space-y-3">
-            <BookOpen className="h-10 w-10 mx-auto" style={{ color: "var(--text-tertiary)" }} />
-            <p className="font-medium" style={{ color: "var(--text-primary)" }}>No judgments found</p>
-            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{result.legalStrategy}</p>
-            <Button variant="outline" onClick={() => setStage("input")}>Try Different Search</Button>
+          <Card className="p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <BookOpen className="h-5 w-5 mt-0.5 flex-shrink-0" style={{ color: "#06b6d4" }} />
+              <div className="space-y-1">
+                <p className="font-semibold" style={{ color: "var(--text-primary)" }}>No direct judgments found</p>
+                <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{result.legalStrategy}</p>
+                <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                  The draft will use statutes, essential legal ingredients, collected facts, and AI-generated legal reasoning. Actual citations will be used only when judgments are selected.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button onClick={handleDraftWithJudgments} className="flex flex-1 items-center justify-center gap-2">
+                <FileText className="h-4 w-4" />
+                Draft {documentNeeded || "Document"} Without Direct Judgments
+              </Button>
+              <Button variant="outline" onClick={() => setChangeJudgmentsOpen(true)} className="flex items-center justify-center gap-2">
+                <Search className="h-4 w-4" />
+                Search Manually
+              </Button>
+            </div>
           </Card>
         ) : (
           <>
@@ -1185,20 +1333,24 @@ Client Position: ${result.searchTerms.clientPosition}`;
           </Button>
           <button
             type="button"
-            onClick={() => void handleResearch()}
+            onClick={() => {
+              setIntakeQuestions([]);
+              setIntakeAnswers({});
+              setStage("details");
+            }}
             disabled={intakeLoading}
             className="w-full text-center text-xs font-medium"
             style={{ color: "var(--text-tertiary)" }}
           >
-            Skip and research directly
+            Continue without related questions
           </button>
         </Card>
       </div>
     );
   }
 
-  // Intake: section-specific fact questions
-  if (stage === "intake") {
+  // Case Details: background facts first, with optional section-specific questions.
+  if (stage === "details") {
     return (
       <div className="max-w-2xl mx-auto space-y-6">
         <Stepper current={3} />
@@ -1209,7 +1361,9 @@ Client Position: ${result.searchTerms.clientPosition}`;
           <div>
             <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Case Details</h1>
             <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-              {intakeQuestions.length} question{intakeQuestions.length !== 1 ? "s" : ""} specific to this matter — fill what you know.
+              {intakeQuestions.length > 0
+                ? `${intakeQuestions.length} matter-specific question${intakeQuestions.length !== 1 ? "s" : ""}. Fill what you know.`
+                : "Add the case background before client information."}
             </p>
           </div>
         </div>
@@ -1227,6 +1381,56 @@ Client Position: ${result.searchTerms.clientPosition}`;
         )}
 
         <Card className="p-6 space-y-5">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+                Case background / additional facts <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span>
+              </label>
+              <button
+                type="button"
+                onClick={backgroundRecording ? stopBackgroundRecording : startBackgroundRecording}
+                disabled={backgroundTranscribing}
+                aria-pressed={backgroundRecording}
+                title={backgroundRecording ? "Stop recording" : "Dictate case background"}
+                className="inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                style={backgroundRecording
+                  ? { background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.35)" }
+                  : { background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-default)" }}
+              >
+                {backgroundTranscribing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : backgroundRecording ? (
+                  <Square className="h-4 w-4" />
+                ) : (
+                  <Mic className="h-4 w-4" />
+                )}
+                <span className="hidden sm:inline">
+                  {backgroundTranscribing ? "Transcribing" : backgroundRecording ? `Stop ${formatRecordingTime(backgroundRecordSeconds)}` : "Dictate"}
+                </span>
+              </button>
+            </div>
+            <textarea
+              rows={5}
+              value={facts}
+              onChange={(e) => setFacts(e.target.value)}
+              placeholder={`Anything not already covered above:\n- What happened and when\n- Important documents or dates\n- Your side's main grounds and the relief you want`}
+              className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+              style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+            />
+            {(backgroundRecording || backgroundTranscribing) && (
+              <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}>
+                {backgroundRecording ? <span className="h-2 w-2 rounded-full bg-danger-500 animate-pulse" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>{backgroundRecording ? `Recording ${formatRecordingTime(backgroundRecordSeconds)}` : "Transcribing voice..."}</span>
+              </div>
+            )}
+          </div>
+
+          {intakeQuestions.length === 0 && (
+            <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-tertiary)" }}>
+              No extra section-specific questions were needed for this matter.
+            </div>
+          )}
+
           {intakeQuestions.map((q) => (
             <div key={q.id} className="space-y-1.5">
               <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
@@ -1256,18 +1460,10 @@ Client Position: ${result.searchTerms.clientPosition}`;
             </div>
           ))}
 
-          <Button onClick={() => setStage("parties")} className="w-full flex items-center justify-center gap-2">
-            Continue
+          <Button onClick={handleContinueFromDetails} className="w-full flex items-center justify-center gap-2">
+            Continue to Client Information
             <ChevronRight className="h-4 w-4" />
           </Button>
-          <button
-            type="button"
-            onClick={() => void handleResearch()}
-            className="w-full text-center text-xs font-medium"
-            style={{ color: "var(--text-tertiary)" }}
-          >
-            Skip remaining and research now
-          </button>
         </Card>
       </div>
     );
@@ -1279,12 +1475,12 @@ Client Position: ${result.searchTerms.clientPosition}`;
       <div className="max-w-2xl mx-auto space-y-6">
         <Stepper current={4} />
         <div className="flex items-center gap-3">
-          <button onClick={() => setStage(intakeQuestions.length > 0 ? "intake" : "confirm")} style={{ color: "var(--text-tertiary)" }}>
+          <button onClick={() => setStage("details")} style={{ color: "var(--text-tertiary)" }}>
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div>
-            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Parties &amp; Court</h1>
-            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>All optional — blank fields become ___ in the draft. Fill what you know.</p>
+            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Client Information</h1>
+            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Add party, opponent, and court details. Blank fields become ___ in the draft.</p>
           </div>
         </div>
 
@@ -1373,21 +1569,10 @@ Client Position: ${result.searchTerms.clientPosition}`;
             </div>
           </div>
 
-          {/* Background + search scope */}
+          {/* Search scope */}
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Background</p>
+            <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Search Scope</p>
             <div className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Case background / additional facts <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span></label>
-                <textarea
-                  rows={3}
-                  value={facts}
-                  onChange={(e) => setFacts(e.target.value)}
-                  placeholder={`Anything not already covered above:\n• What happened and when\n• Important documents or dates\n• Your side's main grounds and the relief you want`}
-                  className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              </div>
               <div className="space-y-1.5">
                 <label className="block text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Search Judgments From</label>
                 <select

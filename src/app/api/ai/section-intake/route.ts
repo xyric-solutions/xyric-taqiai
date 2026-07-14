@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { buildKnowledgeInterpretation, findCaseIntakeProfile } from "@/lib/case-builder-knowledge";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -84,6 +85,7 @@ export async function POST(request: NextRequest) {
   const { action, sections, documentNeeded, purpose, facts, language } = body;
   const isUrdu = language === "ur";
   const labelLang = isUrdu ? "Urdu script" : "English";
+  const knowledgeProfile = findCaseIntakeProfile({ sections, documentNeeded, purpose, facts });
 
   if (!sections?.trim()) {
     return NextResponse.json({ error: "Law section(s) or case type is required." }, { status: 400 });
@@ -91,6 +93,20 @@ export async function POST(request: NextRequest) {
 
   // ── Step 1: Interpret the section — what is this matter about? ────────────────
   if (action === "interpret") {
+    if (knowledgeProfile) {
+      return NextResponse.json({
+        interpretation: buildKnowledgeInterpretation(knowledgeProfile),
+        alternatives: [],
+        profile: {
+          id: knowledgeProfile.id,
+          title: knowledgeProfile.title,
+          law: knowledgeProfile.law,
+          sectionRefs: knowledgeProfile.sectionRefs,
+          ingredients: knowledgeProfile.ingredients,
+        },
+      });
+    }
+
     const interpretPrompt = `You are an expert Pakistani advocate helping identify a legal matter.
 
 The user typed this into the "Law Section(s) / Case Type" field: "${sections}"
@@ -126,6 +142,20 @@ Return ONLY valid JSON (no markdown, no explanation):
 
   // ── Step 2: Build section-specific fact questions ─────────────────────────────
   if (action === "questions") {
+    if (knowledgeProfile) {
+      return NextResponse.json({
+        questions: knowledgeProfile.questions,
+        profile: {
+          id: knowledgeProfile.id,
+          title: knowledgeProfile.title,
+          law: knowledgeProfile.law,
+          sectionRefs: knowledgeProfile.sectionRefs,
+          ingredients: knowledgeProfile.ingredients,
+          draftingGuidance: knowledgeProfile.draftingGuidance,
+        },
+      });
+    }
+
     const questionsPrompt = `You are an expert Pakistani advocate taking case intake from a client.
 
 Law Section(s) / Case Type: "${sections}"

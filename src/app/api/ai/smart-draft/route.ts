@@ -254,6 +254,8 @@ CRITICAL RULES:
    - NEVER assume Lahore, Karachi, Islamabad, or any other city if the user did not provide it.
    - NEVER infer the court rank/designation from document type. Do not write Sessions Judge, Additional Sessions Judge, Civil Judge, Family Court, or High Court unless the user provided it. If court name or district/city is missing, use "___________".
    - If judgments/citations are provided as supporting research, use them only to shape legally sound facts, grounds, and relief.
+   - If the request states that no actual matching judgments were found, do NOT invent reported cases, citations, court names, or case titles. Draft from statutes, legal ingredients, collected facts, analogous legal principles, and AI-generated legal reasoning only.
+   - Clearly distinguish actual cited judgments from AI-generated statutory/legal reasoning. If no actual citations were provided, do not present AI reasoning as case law.
    - DO NOT add a standalone reliance paragraph such as "In this regard, reliance is placed on..." or "principles laid down in..." unless the user expressly asks to cite authorities in the draft.
    - DO NOT list supporting judgments merely because they were used to prepare the case.
 
