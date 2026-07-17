@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAllTemplates, getTemplate } from "@/templates";
 import { generateDocument } from "@/lib/gemini";
-import { isIncompleteLegalDocument, normalizeGeneratedHtml, repairIncompleteCourtDocument } from "@/lib/document-html";
+import { isIncompleteLegalDocument, normalizeGeneratedHtml } from "@/lib/document-html";
 import { formatAmountFull, isAmountField } from "@/lib/pk-format";
 import { TemplateDefinition } from "@/templates/types";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { findCaseIntakeProfile, knowledgeBlock } from "@/lib/case-builder-knowledge";
+import {
+  auditCourtDraftStructure,
+  buildCourtReformatPrompt,
+  getCourtDraftingStandard,
+} from "@/lib/court-drafting-standard";
 
 function getDocumentGenerationError(message: string): { error: string; status: number } {
   const msg = message.toLowerCase();
@@ -209,7 +215,15 @@ export async function POST(request: NextRequest) {
 
     // Inject category-specific rules into the prompt
     const categoryRules = getCategoryRules(category, language || "en");
-    const enhancedPrompt = template.promptTemplate + categoryRules + getGlobalDocumentRules();
+    const draftingRequest = [template.name, template.description, category, subType].join(" ");
+    const courtStandard = getCourtDraftingStandard(draftingRequest);
+    const intakeProfile = findCaseIntakeProfile({ sections: draftingRequest, documentNeeded: template.name });
+    const corpusKnowledge = knowledgeBlock(intakeProfile);
+    const enhancedPrompt = template.promptTemplate
+      + categoryRules
+      + getGlobalDocumentRules()
+      + (corpusKnowledge ? `\n\nANONYMIZED CORPUS-DERIVED LEGAL KNOWLEDGE:\n${corpusKnowledge}` : "")
+      + courtStandard.prompt;
 
     let html = await generateDocument(
       enhancedPrompt,
@@ -232,10 +246,23 @@ IMPORTANT: Regenerate the COMPLETE document from the beginning. The previous out
       );
     }
 
-    html = repairIncompleteCourtDocument(html);
-
     if (isIncompleteLegalDocument(html)) {
       throw new Error("The AI returned an incomplete document. Please generate again.");
+    }
+
+    if (courtStandard.isCourtDocument) {
+      const firstAudit = auditCourtDraftStructure(html, courtStandard);
+      if (!firstAudit.valid) {
+        html = await generateDocument(
+          buildCourtReformatPrompt(enhancedPrompt, html, courtStandard, firstAudit.issues),
+          {},
+          language || "en"
+        );
+        const finalAudit = auditCourtDraftStructure(html, courtStandard);
+        if (!finalAudit.valid) {
+          throw new Error(`The AI could not satisfy the required court format: ${finalAudit.issues.join("; ")}`);
+        }
+      }
     }
 
     // Post-process: strip out witness/notary sections that shouldn't be there

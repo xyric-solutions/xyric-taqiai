@@ -1,0 +1,4 @@
+interface:
+  display_name: "Multiagent Orchestrator"
+  short_description: "Route large project tasks into bounded worker packets."
+  default_prompt: "Use $multiagent-orchestrator to plan and delegate this project task safely."

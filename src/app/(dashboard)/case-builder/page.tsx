@@ -59,8 +59,15 @@ const COURTS = [
 
 const DOCUMENT_TYPES = [
   "Bail Application",
+  "Application under Sections 22-A & 22-B CrPC",
   "Written Statement",
   "Writ Petition",
+  "Civil Revision",
+  "Criminal Revision / Section 561-A Petition",
+  "Order VII Rule 11 Application",
+  "Rent Appeal",
+  "Guardian Petition",
+  "Temporary Injunction Application",
   "Civil Suit",
   "Criminal Complaint",
   "Appeal",
@@ -218,10 +225,17 @@ export default function CaseBuilderPage() {
   const [backgroundRecording, setBackgroundRecording] = useState(false);
   const [backgroundTranscribing, setBackgroundTranscribing] = useState(false);
   const [backgroundRecordSeconds, setBackgroundRecordSeconds] = useState(0);
+  const [fieldRecordingId, setFieldRecordingId] = useState<string | null>(null);
+  const [fieldTranscribingId, setFieldTranscribingId] = useState<string | null>(null);
+  const [fieldRecordSeconds, setFieldRecordSeconds] = useState(0);
   const backgroundRecorderRef = useRef<MediaRecorder | null>(null);
   const backgroundChunksRef = useRef<Blob[]>([]);
   const backgroundStreamRef = useRef<MediaStream | null>(null);
   const backgroundTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fieldRecorderRef = useRef<MediaRecorder | null>(null);
+  const fieldChunksRef = useRef<Blob[]>([]);
+  const fieldStreamRef = useRef<MediaStream | null>(null);
+  const fieldTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const providedDetails = [
     { label: "Law Sections / Case Type", value: sections },
@@ -257,7 +271,9 @@ export default function CaseBuilderPage() {
   useEffect(() => {
     return () => {
       if (backgroundTimerRef.current) clearInterval(backgroundTimerRef.current);
+      if (fieldTimerRef.current) clearInterval(fieldTimerRef.current);
       backgroundStreamRef.current?.getTracks().forEach((track) => track.stop());
+      fieldStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
 
@@ -367,6 +383,97 @@ export default function CaseBuilderPage() {
     backgroundRecorderRef.current.stop();
   };
 
+  const transcribeFieldRecording = async (
+    audioBlob: Blob,
+    fieldId: string,
+    applyTranscript: (text: string) => void
+  ) => {
+    setFieldTranscribingId(fieldId);
+    setError(null);
+    try {
+      if (audioBlob.size === 0) throw new Error("Recording was empty. Please try again.");
+      const base64Audio = await blobToBase64(audioBlob);
+      const res = await fetch("/api/ai/voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ audio: base64Audio, mimeType: audioBlob.type || "audio/webm" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+      if (!res.ok) throw new Error(data.error || "Transcription failed. Please try again.");
+      const text = data.text?.trim();
+      if (!text) throw new Error("No speech was detected. Please speak clearly and try again.");
+      applyTranscript(text);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Voice transcription failed. Please try again.");
+    } finally {
+      setFieldTranscribingId(null);
+      fieldChunksRef.current = [];
+    }
+  };
+
+  const startFieldRecording = async (
+    fieldId: string,
+    applyTranscript: (text: string) => void
+  ) => {
+    if (fieldRecordingId || fieldTranscribingId || backgroundRecording || backgroundTranscribing) return;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setError("Microphone is available only on localhost or HTTPS. Open the app securely and try again.");
+      return;
+    }
+
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      fieldStreamRef.current = stream;
+      const candidates = ["audio/webm", "audio/mp4", "audio/ogg"];
+      const supported = candidates.find(
+        (type) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported?.(type),
+      );
+      const recorder = supported ? new MediaRecorder(stream, { mimeType: supported }) : new MediaRecorder(stream);
+      fieldRecorderRef.current = recorder;
+      fieldChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) fieldChunksRef.current.push(event.data);
+      };
+
+      recorder.onstop = () => {
+        if (fieldTimerRef.current) {
+          clearInterval(fieldTimerRef.current);
+          fieldTimerRef.current = null;
+        }
+        stream.getTracks().forEach((track) => track.stop());
+        fieldStreamRef.current = null;
+        setFieldRecordingId(null);
+        setFieldRecordSeconds(0);
+        const audioBlob = new Blob(fieldChunksRef.current, { type: recorder.mimeType || supported || "audio/webm" });
+        void transcribeFieldRecording(audioBlob, fieldId, applyTranscript);
+      };
+
+      recorder.start();
+      setFieldRecordingId(fieldId);
+      setFieldRecordSeconds(0);
+      fieldTimerRef.current = setInterval(() => setFieldRecordSeconds((seconds) => seconds + 1), 1000);
+    } catch (err) {
+      const name = err instanceof Error ? err.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        setError("Microphone permission denied. Allow mic access in your browser, then try again.");
+      } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        setError("No microphone found. Connect a microphone and try again.");
+      } else {
+        setError("Could not start recording. Please check your microphone and try again.");
+      }
+      fieldStreamRef.current?.getTracks().forEach((track) => track.stop());
+      fieldStreamRef.current = null;
+    }
+  };
+
+  const stopFieldRecording = () => {
+    if (!fieldRecorderRef.current || fieldRecorderRef.current.state !== "recording") return;
+    fieldRecorderRef.current.stop();
+  };
+
   // Fold the confirmed section purpose + section-specific intake answers into the
   // facts, so both research and drafting see the concrete case details.
   const composeFacts = () => {
@@ -377,18 +484,79 @@ export default function CaseBuilderPage() {
       .map((q) => { const v = intakeAnswers[q.id]?.trim(); return v ? `${q.label}: ${v}` : null; })
       .filter(Boolean) as string[];
     if (qa.length) parts.push(qa.join("\n"));
+    const missing = intakeQuestions
+      .filter((q) => q.required && !intakeAnswers[q.id]?.trim())
+      .map((q) => q.label);
+    if (missing.length) {
+      parts.push(`Missing case details to leave as blanks/placeholders: ${missing.join("; ")}`);
+    }
     return parts.join("\n");
   };
 
   const handleContinueFromDetails = () => {
-    const missing = intakeQuestions.filter((q) => q.required && !intakeAnswers[q.id]?.trim());
-    if (missing.length > 0) {
-      const names = missing.slice(0, 3).map((q) => q.label).join(", ");
-      setError(`Please answer the required case detail${missing.length > 1 ? "s" : ""}: ${names}${missing.length > 3 ? "..." : ""}`);
-      return;
-    }
     setError(null);
     setStage("parties");
+  };
+
+  const isNarrativeQuestion = (question: Question) =>
+    /\b(fact|detail|description|reason|ground|circumstance)\b/i.test(`${question.id} ${question.label}`);
+
+  const appendIntakeAnswer = (id: string, text: string) => {
+    const clean = text.trim();
+    if (!clean) return;
+    setIntakeAnswers((current) => {
+      const previous = current[id]?.trim();
+      return { ...current, [id]: previous ? `${previous}\n${clean}` : clean };
+    });
+  };
+
+  const appendDraftAnswer = (id: string, text: string) => {
+    const clean = text.trim();
+    if (!clean) return;
+    setAnswers((current) => {
+      const previous = current[id]?.trim();
+      return { ...current, [id]: previous ? `${previous}\n${clean}` : clean };
+    });
+  };
+
+  const renderFieldMicButton = (
+    fieldId: string,
+    label: string,
+    applyTranscript: (text: string) => void
+  ) => {
+    const isRecording = fieldRecordingId === fieldId;
+    const isTranscribing = fieldTranscribingId === fieldId;
+    const disabled = Boolean(
+      (fieldRecordingId && !isRecording) ||
+      (fieldTranscribingId && !isTranscribing) ||
+      backgroundRecording ||
+      backgroundTranscribing
+    );
+
+    return (
+      <button
+        type="button"
+        onClick={() => isRecording ? stopFieldRecording() : startFieldRecording(fieldId, applyTranscript)}
+        disabled={disabled}
+        aria-pressed={isRecording}
+        title={isRecording ? `Stop recording ${label}` : `Dictate ${label}`}
+        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+        style={isRecording
+          ? { background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.35)" }
+          : { background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-default)" }}
+      >
+        {isTranscribing ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : isRecording ? (
+          <Square className="h-3.5 w-3.5" />
+        ) : (
+          <Mic className="h-3.5 w-3.5" />
+        )}
+        <span className="hidden sm:inline">
+          {isTranscribing ? "Transcribing" : isRecording ? `Stop ${formatRecordingTime(fieldRecordSeconds)}` : "Dictate"}
+        </span>
+      </button>
+    );
   };
 
   // Step 0a: user clicked "Research" — first confirm what the section is about.
@@ -468,11 +636,27 @@ export default function CaseBuilderPage() {
       setSelectedMoreHasMore(true);
       setSelectedMoreRelated(false);
       setStage("results");
-    } catch (err) {
-      setError(err instanceof DOMException && err.name === "AbortError"
-        ? "Research took too long. Please try fewer sections/case keywords or choose a specific court filter."
-        : err instanceof Error ? err.message : "Research failed");
-      setStage("input");
+    } catch {
+      const fallbackTerms = Array.from(new Set(
+        [sections, documentNeeded, ...sections.split(/[,;/]+/)]
+          .map((term) => term.replace(/\s+/g, " ").trim())
+          .filter((term) => term.length >= 2)
+      )).slice(0, 5);
+      setResult({
+        searchTerms: {
+          primaryTerms: fallbackTerms.length ? fallbackTerms : [sections.trim()],
+          secondaryTerms: [],
+          clientPosition: "petitioner",
+        },
+        totalCandidates: 0,
+        judgments: [],
+        legalStrategy: "Judgment research was slow or unavailable for this matter. Continue drafting from the provided facts, applicable statutes, legal ingredients, and best Pakistani pleading practice. Missing details will remain as blanks/placeholders, and no case-law citation will be invented.",
+      });
+      setSelectedMorePage(0);
+      setSelectedMoreHasMore(false);
+      setSelectedMoreRelated(false);
+      setError(null);
+      setStage("results");
     } finally {
       window.clearTimeout(timeoutId);
     }
@@ -607,15 +791,18 @@ export default function CaseBuilderPage() {
 
     const favorable = result.judgments.filter((j) => j.stance === "favorable");
     const neutral = result.judgments.filter((j) => j.stance === "neutral");
+    const adverse = result.judgments.filter((j) => j.stance === "adverse").slice(0, 2);
     const usable = [...favorable, ...neutral].slice(0, 5);
 
     const citationList = usable.map((j) => `${j.citation} (${j.court}, ${j.year})`).join("; ");
-    const researchBasis = usable.length > 0
-      ? `Actual cited judgments from the local database for research guidance only: ${citationList}`
+    const adverseList = adverse.map((j) => `${j.citation} (${j.court}, ${j.year})`).join("; ");
+    const researchBasis = usable.length > 0 || adverse.length > 0
+      ? `Authenticated judgments from the local database are available.${citationList ? ` Supporting or neutral authorities for document-specific grounds: ${citationList}. Apply only materially relevant authorities and tie each citation to the exact proposition it supports.` : ""}${adverseList ? ` Potentially adverse authenticated authorities to address or distinguish: ${adverseList}.` : ""} Case-building strategy: ${result.legalStrategy}`
       : `No actual matching judgments were found in the local database. Build the case from the applicable statutes, legal ingredients, collected facts, analogous legal principles, and AI-generated legal reasoning. Do not invent or fabricate citations. Clearly distinguish AI-generated legal reasoning from actual cited judgments. Strategy: ${result.legalStrategy}`;
-    const docRequest = documentNeeded
-      ? `Draft a ${documentNeeded} for a case involving ${sections}.`
-      : `Draft a legal document for a case involving ${sections}.`;
+    const resolvedDocumentType = documentNeeded || documentType;
+    const docRequest = resolvedDocumentType
+      ? `Draft a ${resolvedDocumentType} for a case involving ${sections}.`
+      : `Identify and draft the procedurally appropriate legal document for a case involving ${sections}.`;
 
     const alreadyKnown = [
       clientName && `Petitioner/Accused/Client Name: ${clientName}`,
@@ -636,7 +823,7 @@ export default function CaseBuilderPage() {
     const richRequest = `${docRequest}
 ${alreadyKnown ? `\nALREADY PROVIDED — do NOT ask for these again:\n${alreadyKnown}\n` : ""}
 ${researchBasis}
-Do not add a standalone reliance/citation paragraph such as "In this regard, reliance is placed..." unless the user expressly asks for authorities to be cited.
+Do not add a standalone reliance paragraph or citation list. Integrate each authenticated authority into the exact legal ground it supports.
 Court heading policy: Use only the provided Court Name and District/City. Never assume Lahore or any other city.
 Client Position: ${result.searchTerms.clientPosition}`;
 
@@ -719,15 +906,18 @@ Client Position: ${result.searchTerms.clientPosition}`;
 
     const favorable = result.judgments.filter((j) => j.stance === "favorable");
     const neutral = result.judgments.filter((j) => j.stance === "neutral");
+    const adverse = result.judgments.filter((j) => j.stance === "adverse").slice(0, 2);
     const usable = [...favorable, ...neutral].slice(0, 5);
 
     const citationList = usable.map((j) => `${j.citation} (${j.court}, ${j.year})`).join("; ");
-    const researchBasis = usable.length > 0
-      ? `Actual cited judgments from the local database for research guidance only: ${citationList}`
+    const adverseList = adverse.map((j) => `${j.citation} (${j.court}, ${j.year})`).join("; ");
+    const researchBasis = usable.length > 0 || adverse.length > 0
+      ? `Authenticated judgments from the local database are available.${citationList ? ` Supporting or neutral authorities for document-specific grounds: ${citationList}. Apply only materially relevant authorities and tie each citation to the exact proposition it supports.` : ""}${adverseList ? ` Potentially adverse authenticated authorities to address or distinguish: ${adverseList}.` : ""} Case-building strategy: ${result.legalStrategy}`
       : `No actual matching judgments were found in the local database. Build the case from the applicable statutes, legal ingredients, collected facts, analogous legal principles, and AI-generated legal reasoning. Do not invent or fabricate citations. Clearly distinguish AI-generated legal reasoning from actual cited judgments. Strategy: ${result.legalStrategy}`;
-    const docRequest = documentNeeded
-      ? `Draft a ${documentNeeded} for a case involving ${sections}.`
-      : `Draft a legal document for a case involving ${sections}.`;
+    const resolvedDocumentType = documentNeeded || documentType;
+    const docRequest = resolvedDocumentType
+      ? `Draft a ${resolvedDocumentType} for a case involving ${sections}.`
+      : `Identify and draft the procedurally appropriate legal document for a case involving ${sections}.`;
 
     const alreadyKnown2 = [
       clientName && `Petitioner/Accused/Client Name: ${clientName}`,
@@ -748,15 +938,16 @@ Client Position: ${result.searchTerms.clientPosition}`;
     const richRequest = `${docRequest}
 ${alreadyKnown2 ? `\nALREADY PROVIDED — do NOT ask for these again:\n${alreadyKnown2}\n` : ""}
 ${researchBasis}
-Do not add a standalone reliance/citation paragraph such as "In this regard, reliance is placed..." unless the user expressly asks for authorities to be cited.
+Do not add a standalone reliance paragraph or citation list. Integrate each authenticated authority into the exact legal ground it supports.
 Court heading policy: Use only the provided Court Name and District/City. Never assume Lahore or any other city.
 Client Position: ${result.searchTerms.clientPosition}`;
 
     const enrichedAnswers = {
       ...answers,
-      ...(usable.length > 0 ? {
+      ...(usable.length > 0 || adverse.length > 0 ? {
         research_guidance_from_judgments: usable.map((j) => `${j.citation} — ${j.ratio}`).join("; "),
-        citation_policy: "Use these judgments only as drafting guidance. Do not insert a generic reliance paragraph or citation list unless the user expressly asks for authorities.",
+        adverse_judgments_to_distinguish: adverse.map((j) => `${j.citation} — ${j.ratio}`).join("; "),
+        citation_policy: "Use only these authenticated judgments where materially applicable. Tie each citation and supplied ratio to the exact legal ground it supports; never add a generic reliance paragraph or citation list.",
       } : {
         no_matching_judgments: "No actual matching judgments were found in the local database.",
         ai_generated_legal_reasoning: result.legalStrategy,
@@ -904,13 +1095,23 @@ Client Position: ${result.searchTerms.clientPosition}`;
             </div>
           ) : (
             <>
+              <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.22)", color: "var(--text-secondary)" }}>
+                You may generate now even if some fields are empty. Missing information will appear as <span className="font-semibold" style={{ color: "var(--text-primary)" }}>___________</span> in the draft.
+              </div>
+
               {questions.map((q) => (
                 <div key={q.id} className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-                    {q.label}
-                    {q.required && <span style={{ color: "#ef4444" }}> *</span>}
-                  </label>
-                  {q.id.includes("fact") || q.id.includes("detail") || q.id.includes("ground") || q.id.includes("reason") || q.id.includes("description") ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+                      {q.label}
+                      {q.required && <span style={{ color: "#ef4444" }}> *</span>}
+                    </label>
+                    {renderFieldMicButton(`draft:${q.id}`, q.label, (text) => appendDraftAnswer(q.id, text))}
+                  </div>
+                  <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                    Example format: {q.placeholder}
+                  </p>
+                  {isNarrativeQuestion(q) ? (
                     <textarea
                       rows={3}
                       value={answers[q.id] || ""}
@@ -929,12 +1130,18 @@ Client Position: ${result.searchTerms.clientPosition}`;
                       style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
                     />
                   )}
+                  {(fieldRecordingId === `draft:${q.id}` || fieldTranscribingId === `draft:${q.id}`) && (
+                    <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}>
+                      {fieldRecordingId === `draft:${q.id}` ? <span className="h-2 w-2 rounded-full bg-danger-500 animate-pulse" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                      <span>{fieldRecordingId === `draft:${q.id}` ? `Recording ${formatRecordingTime(fieldRecordSeconds)}` : "Transcribing voice..."}</span>
+                    </div>
+                  )}
                 </div>
               ))}
 
               <Button onClick={handleGenerate} className="w-full flex items-center justify-center gap-2 mt-2">
                 <Sparkles className="h-4 w-4" />
-                Generate Document
+                Generate Document, blanks are okay
               </Button>
             </>
           )}
@@ -1362,7 +1569,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
             <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Case Details</h1>
             <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
               {intakeQuestions.length > 0
-                ? `${intakeQuestions.length} matter-specific question${intakeQuestions.length !== 1 ? "s" : ""}. Fill what you know.`
+                ? `${intakeQuestions.length} matter-specific question${intakeQuestions.length !== 1 ? "s" : ""}. Fill what you know, leave the rest blank.`
                 : "Add the case background before client information."}
             </p>
           </div>
@@ -1381,6 +1588,10 @@ Client Position: ${result.searchTerms.clientPosition}`;
         )}
 
         <Card className="p-6 space-y-5">
+          <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.22)", color: "var(--text-secondary)" }}>
+            Missing details will not stop drafting. TaqiAI will prepare the full case and place blanks like <span className="font-semibold" style={{ color: "var(--text-primary)" }}>___________</span> wherever information is still needed.
+          </div>
+
           <div className="space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
@@ -1433,12 +1644,18 @@ Client Position: ${result.searchTerms.clientPosition}`;
 
           {intakeQuestions.map((q) => (
             <div key={q.id} className="space-y-1.5">
-              <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-                {q.label}
-                {q.required && <span style={{ color: "#ef4444" }}> *</span>}
-                {!q.required && <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}> (optional)</span>}
-              </label>
-              {/\b(fact|detail|description|reason|ground|circumstance)\b/i.test(q.id + " " + q.label) ? (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+                  {q.label}
+                  {q.required && <span style={{ color: "#ef4444" }}> *</span>}
+                  {!q.required && <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}> (optional)</span>}
+                </label>
+                {renderFieldMicButton(`intake:${q.id}`, q.label, (text) => appendIntakeAnswer(q.id, text))}
+              </div>
+              <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                Example format: {q.placeholder}
+              </p>
+              {isNarrativeQuestion(q) ? (
                 <textarea
                   rows={3}
                   value={intakeAnswers[q.id] || ""}
@@ -1457,11 +1674,17 @@ Client Position: ${result.searchTerms.clientPosition}`;
                   style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
                 />
               )}
+              {(fieldRecordingId === `intake:${q.id}` || fieldTranscribingId === `intake:${q.id}`) && (
+                <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}>
+                  {fieldRecordingId === `intake:${q.id}` ? <span className="h-2 w-2 rounded-full bg-danger-500 animate-pulse" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  <span>{fieldRecordingId === `intake:${q.id}` ? `Recording ${formatRecordingTime(fieldRecordSeconds)}` : "Transcribing voice..."}</span>
+                </div>
+              )}
             </div>
           ))}
 
           <Button onClick={handleContinueFromDetails} className="w-full flex items-center justify-center gap-2">
-            Continue to Client Information
+            Continue to Client Information, blanks are okay
             <ChevronRight className="h-4 w-4" />
           </Button>
         </Card>

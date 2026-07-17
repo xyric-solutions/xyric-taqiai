@@ -173,11 +173,14 @@ Examples of the level of detail wanted:
 
 STRICT RULES:
 1. Ask ONLY the case-specific facts for this matter. DO NOT ask for generic party identity that the form already collects: client/opponent name, father name, CNIC, address, court name, district/city. Skip those entirely.
-2. Return between 3 and 8 questions. If fewer genuinely apply, return fewer.
+2. Return between 4 and 10 questions. If fewer genuinely apply, return fewer.
 3. Field "id" must be snake_case English (e.g. "vehicle_registration_no", "date_of_theft").
 4. Write each "label" in ${labelLang}.
 5. Placeholders must be realistic Pakistani examples written in ${isUrdu ? "Urdu script" : "English"}.
 6. Mark a question "required": true only if the draft would be materially incomplete without it.
+7. Adapt the questions to the exact procedural posture and intended document. Cover, where relevant: the client's side, enabling law, incident or transaction chronology, impugned FIR/order/notice/decree, current proceeding stage, limitation dates, jurisdiction or forum, statutory ingredients, supporting documents and witnesses, prior proceedings or alternate remedy, likely opposing contention, interim protection, and exact final relief.
+8. Do not ask the user to provide legal arguments or case citations. Ask for facts and documents from which the system can build arguments and research authenticated judgments.
+9. Never assume a court, province, procedural remedy, or legal provision merely from a vague label. Ask a focused clarification when it changes jurisdiction or maintainability.
 
 Return ONLY valid JSON (no markdown, no explanation):
 {
@@ -200,7 +203,7 @@ Return ONLY valid JSON (no markdown, no explanation):
               placeholder: String(q.placeholder || ""),
               required: Boolean(q.required),
             }))
-            .slice(0, 8)
+            .slice(0, 10)
         : [];
       return NextResponse.json({ questions });
     } catch {

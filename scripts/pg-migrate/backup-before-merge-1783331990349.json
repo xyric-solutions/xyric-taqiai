@@ -1,0 +1,71 @@
+{
+  "matters": [
+    {
+      "id": "cmpw6v04a0001uioktkentlx6",
+      "userId": "cmpcf6v0y0000uiiopf3ksaxc",
+      "title": "Ali Khan property Dispute",
+      "caseNo": "CS-2541254",
+      "court": "Lahore High Court",
+      "caseType": "Civil",
+      "status": "active",
+      "role": "Counsel for Plaintiff",
+      "clientName": "Muhammad Siraj",
+      "clientCnic": null,
+      "clientPhone": null,
+      "opponentName": "Ilyas",
+      "judgeName": "Ishtiaq Ahmad First Class Judge",
+      "dateFiled": "2026-06-01T00:00:00.000Z",
+      "nextHearing": "2026-06-02T00:00:00.000Z",
+      "notes": null,
+      "documentIds": "[]",
+      "archived": false,
+      "stage": null,
+      "proceeding": null,
+      "lastDate": null,
+      "createdAt": "2026-06-02T05:20:10.320Z",
+      "updatedAt": "2026-06-02T07:51:01.735Z"
+    },
+    {
+      "id": "cmpw944jd0003uiokul9nx58n",
+      "userId": "cmpcf6v0y0000uiiopf3ksaxc",
+      "title": "Nouman V. State",
+      "caseNo": "CS-5477414",
+      "court": "Lahore High Court",
+      "caseType": "Criminal",
+      "status": "active",
+      "role": "Counsel for Respondent",
+      "clientName": "Salah Ud Din",
+      "clientCnic": null,
+      "clientPhone": null,
+      "opponentName": "Wapda",
+      "judgeName": "Hamza",
+      "dateFiled": "2026-04-25T00:00:00.000Z",
+      "nextHearing": "2026-06-05T00:00:00.000Z",
+      "notes": null,
+      "documentIds": "[]",
+      "archived": true,
+      "stage": null,
+      "proceeding": null,
+      "lastDate": null,
+      "createdAt": "2026-06-02T06:23:15.193Z",
+      "updatedAt": "2026-06-02T07:51:09.601Z"
+    }
+  ],
+  "hearings": [],
+  "diary": [
+    {
+      "id": "cmr1werlv000arv4bcfe1ceov",
+      "userId": "cmr1wb2x20000rv4br03mowj6",
+      "caseNumber": "123",
+      "lastDate": "2026-07-01T00:00:00.000Z",
+      "title": "Harrassment ",
+      "courtName": "Session Court",
+      "stage": "Bail Hearing",
+      "proceeding": null,
+      "nextDate": "2026-07-01T00:00:00.000Z",
+      "clientPhone": null,
+      "createdAt": "2026-07-01T09:53:56.035Z",
+      "updatedAt": "2026-07-01T09:54:24.223Z"
+    }
+  ]
+}

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { searchCandidatesFast, getLocalJudgmentById } from "@/lib/judgment-db";
+import {
+  relatedLocalJudgments,
+  searchSectionJudgments,
+  type JudgmentSearchResult,
+} from "@/lib/judgment-db-runtime";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { buildNoJudgmentLegalStrategy, findCaseIntakeProfile } from "@/lib/case-builder-knowledge";
@@ -68,11 +72,27 @@ export interface PreparedJudgment {
 
 type ClientPosition = "prosecution" | "defence" | "petitioner" | "respondent" | "appellant";
 
+function inferClientPosition(input: string, fallback: string | undefined): ClientPosition {
+  if (/\b(?:appellant|appealing|file an appeal|challenge on appeal)\b/i.test(input)) return "appellant";
+  if (/\b(?:accused|defence|criminal defendant)\b/i.test(input)) return "defence";
+  if (/\b(?:defendant|respondent|judgment debtor|tenant|opposite party)\b/i.test(input)) return "respondent";
+  if (/\b(?:complainant|prosecution|state counsel)\b/i.test(input)) return "prosecution";
+  if (/\b(?:petitioner|applicant|plaintiff|claimant|decree holder|legal heir)\b/i.test(input)) return "petitioner";
+  return ["prosecution", "defence", "petitioner", "respondent", "appellant"].includes(fallback || "")
+    ? fallback as ClientPosition
+    : "petitioner";
+}
+
 function looksLikeSection(term: string): boolean {
   return /\b\d{2,4}\s*[-/]?\s*[A-Za-z]?\b/.test(term);
 }
 
 const CASE_TYPE_SEARCH_HINTS: Array<{ pattern: RegExp; terms: string[]; position?: ClientPosition }> = [
+  { pattern: /\b22\s*[-/]?\s*[ab]\b|justice of peace|fir registration direction/i, terms: ["22-A CrPC", "22-B CrPC", "registration of FIR"], position: "petitioner" },
+  { pattern: /\bcivil revision\b|\b115\s*cpc\b/i, terms: ["115 CPC", "civil revision", "material irregularity"], position: "petitioner" },
+  { pattern: /\bcriminal revision\b|\b561\s*[-/]?\s*a\b|quashment/i, terms: ["561-A CrPC", "criminal revision", "quashment"], position: "petitioner" },
+  { pattern: /order\s*(?:vii|7)\s*rule\s*11|rejection of plaint/i, terms: ["Order VII Rule 11 CPC", "rejection of plaint"], position: "respondent" },
+  { pattern: /\brent appeal\b|ejectment order/i, terms: ["Punjab Rented Premises Act 2009", "rent appeal", "ejectment"], position: "appellant" },
   { pattern: /\b(murder|qatl|قتل|homicide)\b/i, terms: ["302 PPC", "murder", "qatl"], position: "defence" },
   { pattern: /\b(attempt(?:ed)? murder|attempt to murder)\b/i, terms: ["324 PPC", "attempt murder"], position: "defence" },
   { pattern: /\b(bail|ضمانت)\b/i, terms: ["497 CrPC", "bail"], position: "defence" },
@@ -126,6 +146,76 @@ function mappedCaseTypeTerms(input: string): { terms: string[]; position?: Clien
   return {
     terms: Array.from(new Set(terms)).slice(0, 4),
     position,
+  };
+}
+
+function dedupeCandidateResults(results: JudgmentSearchResult[], limit: number): JudgmentSearchResult[] {
+  const seen = new Set<number>();
+  const out: JudgmentSearchResult[] = [];
+
+  for (const result of results) {
+    if (seen.has(result.id)) continue;
+    seen.add(result.id);
+    out.push(result);
+    if (out.length >= limit) break;
+  }
+
+  return out;
+}
+
+async function searchCaseBuilderCandidates(
+  terms: string[],
+  court?: string,
+  year?: string,
+  limit = 30
+): Promise<JudgmentSearchResult[]> {
+  const cleaned = uniqueTerms(terms, 8);
+  if (!cleaned.length) return [];
+
+  const sectionTerms = cleaned.filter(looksLikeSection).slice(0, 3);
+  const criminalContext = cleaned.some((term) =>
+    /\b(?:ppc|criminal|complaint|fir|police|offen[cs]e|accused|murder|qatl|bail)\b/i.test(term)
+  );
+  const searchSectionTerm = (term: string) =>
+    criminalContext && !/\b(?:ppc|cr\.?\s*p\.?\s*c|crpc|c\.?\s*p\.?\s*c|cpc|qso|constitution|article|act|ordinance)\b/i.test(term)
+      ? `${term} PPC`
+      : term;
+  const sectionResults = (
+    await Promise.all(sectionTerms.map(async (term) => {
+      const query = searchSectionTerm(term);
+      const reported = await searchSectionJudgments(query, court, year, 10, 0, true);
+      return reported.length ? reported : searchSectionJudgments(query, court, year, 10, 0, false);
+    }))
+  ).flat();
+  const sectionCandidates = dedupeCandidateResults(sectionResults, limit);
+  if (sectionCandidates.length >= Math.min(5, limit)) return sectionCandidates;
+
+  const broadQuery = cleaned.join(" ");
+  const reportedRelated = await relatedLocalJudgments(broadQuery, court, year, limit + 10, "relevance", 0, true);
+  const relatedResults = reportedRelated.length
+    ? reportedRelated
+    : await relatedLocalJudgments(broadQuery, court, year, limit + 10, "relevance", 0, false);
+
+  // Prefer exact section hits, then broader keyword matches. This mirrors the
+  // user-facing judgment search runtime store (Postgres in production, SQLite
+  // only as a local fallback) instead of the old Case Builder SQLite-only path.
+  return dedupeCandidateResults([...sectionCandidates, ...relatedResults], limit);
+}
+
+function candidateToPreparedJudgment(
+  judgment: JudgmentSearchResult,
+  reason: string,
+  stance: PreparedJudgment["stance"] = "neutral"
+): PreparedJudgment {
+  return {
+    id: judgment.id,
+    citation: judgment.citation,
+    court: judgment.court,
+    year: judgment.year,
+    title: judgment.title,
+    reason,
+    ratio: judgment.passages?.[0] || "Review the judgment text for the exact legal principle and factual match.",
+    stance,
   };
 }
 
@@ -244,7 +334,10 @@ Rules:
       ...(Array.isArray(searchTerms.primaryTerms) ? searchTerms.primaryTerms : []),
     ], 6),
     secondaryTerms: uniqueTerms(Array.isArray(searchTerms.secondaryTerms) ? searchTerms.secondaryTerms : [], 3),
-    clientPosition: searchTerms.clientPosition || caseTypeHint.position || knowledgeProfile?.clientPosition || "defence",
+    clientPosition: inferClientPosition(
+      `${sections} ${facts || ""} ${documentNeeded || ""}`,
+      searchTerms.clientPosition || caseTypeHint.position || knowledgeProfile?.clientPosition
+    ),
   };
 
   // Step 2: Search DB with extracted terms
@@ -253,10 +346,10 @@ Rules:
   const allTerms = uniqueTerms([...searchTerms.primaryTerms, ...searchTerms.secondaryTerms], 5);
   const hasMappedSectionTerm = caseTypeHint.terms.some((term) => looksLikeSection(term));
 
-  // Single fast query. A SQL `ORDER BY relevance` over ~240k rows with `content LIKE`
-  // takes ~80s and was the cause of the 60s client abort; searchCandidatesFast skips
-  // the ORDER BY (LIMIT short-circuits the scan) and relevance-sorts in memory (~1-2s).
-  const candidates = searchCandidatesFast(allTerms, courtParam, yearParam, 30);
+  const candidates = await withTimeout(
+    searchCaseBuilderCandidates(allTerms, courtParam, yearParam, 12),
+    18_000
+  ).catch(() => []);
 
   if (candidates.length === 0) {
     return NextResponse.json({
@@ -267,15 +360,17 @@ Rules:
     });
   }
 
-  // Step 3: Fetch full content for top candidates from a court-diverse pool
-  const topCandidates = candidates.slice(0, 14);
-  const withContent = topCandidates
-    .map((j) => {
-      const full = getLocalJudgmentById(j.id);
-      const content = full?.content?.slice(0, 2500) || j.passages.join(" ") || "";
-      return { id: j.id, citation: j.citation, court: j.court, year: j.year, title: j.title, content };
-    })
-    .filter((j) => j.content.length > 50);
+  // Step 3: Use snippets already returned by the indexed search. Fetching full
+  // content for every candidate caused slow Railway proxy bursts and client
+  // aborts. Full text remains available later through the Review button.
+  const withContent = candidates.slice(0, 8).map((j) => ({
+    id: j.id,
+    citation: j.citation,
+    court: j.court,
+    year: j.year,
+    title: j.title,
+    content: (j.passages?.join(" ") || j.title || j.citation).slice(0, 1400),
+  }));
 
   // Step 4: Gemini — analyze and pick best judgments
   if (searchTerms.primaryTerms.some((term) => looksLikeSection(term)) && hasMappedSectionTerm) {
@@ -283,19 +378,12 @@ Rules:
     return NextResponse.json({
       searchTerms,
       totalCandidates: candidates.length,
-      judgments: withContent.slice(0, 5).map((j) => ({
-        id: j.id,
-        citation: j.citation,
-        court: j.court,
-        year: j.year,
-        title: j.title,
-        reason: `Relevant judgment mentioning section ${sectionTerms.join(", ")}.`,
-        ratio: "Review the judgment text for the exact legal principle and factual match.",
-        stance: "neutral" as const,
-      })),
+      judgments: candidates.slice(0, 5).map((j) =>
+        candidateToPreparedJudgment(j, `Relevant judgment mentioning section ${sectionTerms.join(", ")}.`)
+      ),
       legalStrategy: facts?.trim()
-        ? "These judgments were found directly from the mapped section/case type. Review them against the facts before drafting."
-        : "These judgments were found directly from the section/case type. Add brief case facts for a stronger favorable/adverse analysis.",
+        ? `These judgments were found directly from the mapped section/case type. Review them against the facts before drafting.${knowledgeProfile ? ` Drafting profile: ${knowledgeProfile.draftingGuidance}` : ""}`
+        : `These judgments were found directly from the section/case type. Add brief case facts for a stronger favorable/adverse analysis.${knowledgeProfile ? ` Drafting profile: ${knowledgeProfile.draftingGuidance}` : ""}`,
     });
   }
 
@@ -349,27 +437,36 @@ Return ONLY valid JSON (no markdown):
 
   let analysis: { selected: PreparedJudgment[]; legalStrategy: string };
   try {
-    const raw = await withTimeout(tryGenerate(analyzePrompt), 18_000);
+    const raw = await withTimeout(tryGenerate(analyzePrompt), 8_000);
     const cleaned = raw.replace(/```json\n?/gi, "").replace(/```\n?/gi, "").trim();
     analysis = JSON.parse(cleaned);
     if (!Array.isArray(analysis.selected)) throw new Error("bad shape");
-    // Attach title from withContent if missing
-    analysis.selected = analysis.selected.map((s) => {
-      const src = withContent.find((w) => w.id === s.id);
-      return { ...s, title: s.title || src?.title || null };
-    });
+    analysis.selected = analysis.selected
+      .map((selected) => {
+        const source = withContent.find((candidate) => candidate.id === Number(selected.id));
+        if (!source) return null;
+        const stance: PreparedJudgment["stance"] = ["favorable", "adverse", "neutral"].includes(selected.stance)
+          ? selected.stance
+          : "neutral";
+        return {
+          id: source.id,
+          citation: source.citation,
+          court: source.court,
+          year: source.year,
+          title: source.title,
+          reason: String(selected.reason || "Relevant to the identified legal issue."),
+          ratio: String(selected.ratio || "Review the authenticated judgment text for the precise ratio."),
+          stance,
+        };
+      })
+      .filter((selected): selected is PreparedJudgment => selected !== null)
+      .slice(0, 5);
+    if (analysis.selected.length === 0) throw new Error("no authenticated selections");
   } catch {
     analysis = {
-      selected: withContent.slice(0, 5).map((j) => ({
-        id: j.id,
-        citation: j.citation,
-        court: j.court,
-        year: j.year,
-        title: j.title,
-        reason: "Relevant to the cited law section or case issue.",
-        ratio: "See full judgment for the key legal principle.",
-        stance: "neutral" as const,
-      })),
+      selected: candidates.slice(0, 5).map((j) =>
+        candidateToPreparedJudgment(j, "Relevant to the cited law section or case issue.")
+      ),
       legalStrategy: "Review the selected judgments for guidance. Do not add a generic reliance paragraph unless the lawyer expressly wants authorities cited in the draft.",
     };
   }
@@ -378,6 +475,6 @@ Return ONLY valid JSON (no markdown):
     searchTerms,
     totalCandidates: candidates.length,
     judgments: analysis.selected,
-    legalStrategy: analysis.legalStrategy,
+    legalStrategy: `${analysis.legalStrategy}${knowledgeProfile ? ` Drafting profile: ${knowledgeProfile.draftingGuidance}` : ""}`,
   });
 }

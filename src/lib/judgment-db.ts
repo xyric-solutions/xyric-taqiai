@@ -260,8 +260,8 @@ function orderBy(sort: SortMode): string {
 /** The archive contains many exact-duplicate imports of the same judgment.
  *  Collapse them by a normalised prefix of the text so each judgment shows once. */
 function dedupeKey(r: any): string {
-  if (r.content) return r.content.replace(/\s+/g, " ").trim().slice(0, 300).toLowerCase();
-  if (r.real_citation) return String(r.real_citation).toLowerCase();
+  if (r.real_citation) return `citation:${String(r.real_citation).replace(/[^a-z0-9]/gi, "").toUpperCase()}`;
+  if (r.content) return `content:${r.content.replace(/\s+/g, " ").trim().slice(0, 300).toLowerCase()}`;
   return `id:${r.id}`;
 }
 

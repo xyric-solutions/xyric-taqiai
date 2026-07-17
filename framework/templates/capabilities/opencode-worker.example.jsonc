@@ -1,0 +1,57 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ollama/qwen3.6:27b-mlx",
+  "small_model": "ollama/qwen3.6:27b-mlx",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://localhost:11434/v1"
+      },
+      "models": {
+        "qwen3.6:27b-mlx": {
+          "name": "Qwen 3.6 27B MLX (local example)"
+        }
+      }
+    }
+  },
+  "permission": {
+    "read": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "list": "allow",
+    "edit": "deny",
+    "bash": "ask",
+    "task": "deny",
+    "external_directory": "deny",
+    "webfetch": "deny",
+    "websearch": "deny"
+  },
+  "agent": {
+    "forgeflow-worker": {
+      "description": "Bounded Forgeflow worker. Use only with a filled worker task packet and evidence path.",
+      "mode": "primary",
+      "model": "ollama/qwen3.6:27b-mlx",
+      "temperature": 0.1,
+      "steps": 20,
+      "permission": {
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "list": "allow",
+        "edit": "deny",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow"
+        },
+        "task": "deny",
+        "external_directory": "deny",
+        "webfetch": "deny",
+        "websearch": "deny"
+      },
+      "prompt": "You are a bounded Forgeflow worker. Follow the worker task packet exactly, stay inside allowed files and denied actions, and write evidence only until orchestrator verification."
+    }
+  }
+}

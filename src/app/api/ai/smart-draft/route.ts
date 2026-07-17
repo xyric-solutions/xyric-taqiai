@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { isIncompleteLegalDocument, normalizeGeneratedHtml, repairIncompleteCourtDocument } from "@/lib/document-html";
+import { isIncompleteLegalDocument, normalizeGeneratedHtml } from "@/lib/document-html";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { findCaseIntakeProfile, knowledgeBlock } from "@/lib/case-builder-knowledge";
+import {
+  auditCourtDraftStructure,
+  buildCourtReformatPrompt,
+  getCourtDraftingStandard,
+} from "@/lib/court-drafting-standard";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -119,6 +125,154 @@ function countBlanks(html: string): number {
   return (html.match(/___________/g) || []).length;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function labelFromKey(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/\bCnic\b/g, "CNIC")
+    .replace(/\bFir\b/g, "FIR");
+}
+
+function findAnswer(answers: Record<string, string>, patterns: RegExp[]): string {
+  for (const [key, value] of Object.entries(answers)) {
+    if (!value?.trim()) continue;
+    if (patterns.some((pattern) => pattern.test(key))) return value.trim();
+  }
+  return "___________";
+}
+
+function splitAuthorities(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  return value
+    .split(";")
+    .map((item) => item.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function fallbackLegalDocument(
+  userRequest: string,
+  answers: Record<string, string>
+): string {
+  const standard = getCourtDraftingStandard(userRequest);
+  const today = escapeHtml(todayFormatted());
+  const courtName = escapeHtml(findAnswer(answers, [/court/i, /authority/i]));
+  const district = escapeHtml(findAnswer(answers, [/district/i, /city/i, /place/i]));
+  const clientName = escapeHtml(findAnswer(answers, [/client.*name/i, /petitioner.*name/i, /applicant.*name/i, /complainant.*name/i, /^full_name$/i]));
+  const clientFather = escapeHtml(findAnswer(answers, [/client.*father/i, /petitioner.*father/i, /applicant.*father/i, /father_name/i]));
+  const clientCnic = escapeHtml(findAnswer(answers, [/client.*cnic/i, /petitioner.*cnic/i, /applicant.*cnic/i, /\bcnic\b/i]));
+  const clientAddress = escapeHtml(findAnswer(answers, [/client.*address/i, /petitioner.*address/i, /applicant.*address/i, /\baddress\b/i]));
+  const opponentName = escapeHtml(findAnswer(answers, [/opponent.*name/i, /respondent.*name/i, /accused.*name/i, /defendant.*name/i]));
+  const opponentFather = escapeHtml(findAnswer(answers, [/opponent.*father/i, /respondent.*father/i, /accused.*father/i, /defendant.*father/i]));
+  const opponentAddress = escapeHtml(findAnswer(answers, [/opponent.*address/i, /respondent.*address/i, /accused.*address/i, /defendant.*address/i]));
+  const firNo = escapeHtml(findAnswer(answers, [/fir/i, /case.*no/i, /case.*number/i]));
+  const policeStation = escapeHtml(findAnswer(answers, [/police/i, /station/i, /thana/i]));
+  const relief = escapeHtml(findAnswer(answers, [/relief/i, /prayer/i, /direction/i]));
+  const facts = escapeHtml(findAnswer(answers, [/facts/i, /case_facts/i, /background/i, /occurrence/i, /details/i]));
+  const authorities = splitAuthorities(answers.research_guidance_from_judgments);
+  const adverseAuthorities = splitAuthorities(answers.adverse_judgments_to_distinguish);
+  const provided = Object.entries(answers)
+    .filter(([, value]) => value?.trim())
+    .slice(0, 18)
+    .map(([key, value]) => `<li><strong>${escapeHtml(labelFromKey(key))}:</strong> ${escapeHtml(value.trim())}</li>`)
+    .join("");
+
+  if (!standard.isCourtDocument) {
+    return `
+<h2>${escapeHtml(userRequest || "LEGAL DOCUMENT")}</h2>
+<p><strong>Date:</strong> ${today}</p>
+<h3>PARTICULARS</h3>
+<ol>${provided || "<li>Relevant particulars: ___________</li>"}</ol>
+<h3>RECITALS AND FACTS</h3>
+<ol>
+  <li>The document is prepared on the basis of the information supplied by the user. Missing particulars are intentionally left as ___________ for later completion.</li>
+  <li>${facts}</li>
+</ol>
+<h3>OPERATIVE TERMS</h3>
+<ol>
+  <li>The parties shall act in accordance with the applicable Pakistani law and the facts stated above.</li>
+  <li>Any missing names, dates, addresses, amounts, descriptions, and annexure references shall be completed before execution or filing.</li>
+</ol>
+<h3>SIGNATURE</h3>
+<p>___________</p>`;
+  }
+
+  const authorityItems = authorities.length
+    ? authorities.map((authority) => `<li>The authenticated database authority ${escapeHtml(authority)} may be relied upon only for the specific legal proposition reflected in its supplied ratio and only where factually applicable.</li>`).join("")
+    : "<li>No authenticated judgment citation is inserted because no selected judgment was supplied for this ground. The argument is framed on statute, legal ingredients, and supplied facts only.</li>";
+  const adverseItems = adverseAuthorities.length
+    ? adverseAuthorities.map((authority) => `<li>The potentially adverse authenticated authority ${escapeHtml(authority)} should be distinguished on facts, evidence, procedural posture, or the exact statutory ingredient in issue.</li>`).join("")
+    : "<li>No adverse selected authority was supplied. Any authority later added by counsel should be addressed in the relevant ground instead of in a generic citation list.</li>";
+
+  return `
+<h2>IN THE COURT OF ${courtName}${district !== "___________" ? `, ${district}` : ""}</h2>
+<p><strong>${escapeHtml(standard.label)} No. ___________ of 20__</strong></p>
+<p>${clientName} S/o ${clientFather}, CNIC No. ${clientCnic}, R/o ${clientAddress} .......... Petitioner / Applicant / Complainant</p>
+<p><strong>VERSUS</strong></p>
+<p>${opponentName} S/o ${opponentFather}, R/o ${opponentAddress} .......... Respondent / Accused / Opposite Party</p>
+<h2>${escapeHtml(standard.label.toUpperCase())}</h2>
+<p><strong>UNDER THE RELEVANT PROVISIONS OF PAKISTANI LAW INCLUDING THE SECTIONS IDENTIFIED IN THE CASE BUILDER</strong></p>
+<h3>RESPECTFULLY SHEWETH:</h3>
+<h3>${escapeHtml(standard.orderedHeadings[0] || "CASE PARTICULARS")}</h3>
+<ol>
+  <li>The petitioner/applicant/complainant seeks the indulgence of this Honourable Court in respect of the matter described in the Case Builder request: ${escapeHtml(userRequest)}.</li>
+  <li>FIR/case number is ${firNo}; police station or relevant forum is ${policeStation}; remaining procedural particulars, if any, are left as ___________.</li>
+</ol>
+<h3>${escapeHtml(standard.orderedHeadings[1] || "PRELIMINARY SUBMISSIONS")}</h3>
+<ol>
+  <li>The present draft is prepared from supplied facts only. Every missing fact, date, document number, annexure mark, and procedural history item is deliberately shown as ___________.</li>
+  <li>The matter is maintainable before the competent forum subject to completion of jurisdictional, limitation, and court-fee particulars by counsel before filing.</li>
+</ol>
+<h3>${escapeHtml(standard.orderedHeadings[2] || "FACTS OF THE CASE")}</h3>
+<ol>
+  <li>${facts}</li>
+  <li>The available record and supporting documents are: ___________. The exact annexure numbers shall be inserted after review of the file.</li>
+  <li>The cause of action arose when the facts stated above occurred and continued through the refusal, omission, accusation, or threatened legal consequence complained of.</li>
+</ol>
+<h3>${escapeHtml(standard.orderedHeadings[3] || "MAINTAINABILITY, JURISDICTION AND LIMITATION")}</h3>
+<ol>
+  <li>This Honourable Court has jurisdiction subject to the supplied court and district particulars. Any missing territorial or pecuniary facts shall be completed before filing.</li>
+  <li>The matter is within limitation, or delay if any requires explanation as follows: ___________.</li>
+</ol>
+<h3>${escapeHtml(standard.orderedHeadings[4] || "LEGAL GROUNDS")}</h3>
+<ol>
+  <li>The essential statutory ingredients must be strictly proved or satisfied according to the applicable law, and the supplied facts should be tested against each ingredient separately.</li>
+  <li>The opposing version is liable to be challenged on the basis of omissions, contradictions, absence of supporting material, mala fide, jurisdictional defect, procedural illegality, or failure to satisfy the relevant statutory threshold, as applicable.</li>
+  ${authorityItems}
+  ${adverseItems}
+</ol>
+<h3>${escapeHtml(standard.orderedHeadings[5] || "INTERIM RELIEF")}</h3>
+<ol>
+  <li>Interim protection, if required, may be sought to preserve the subject matter, personal liberty, record, possession, custody, status quo, or lawful process pending final decision: ___________.</li>
+</ol>
+<h3>${escapeHtml(standard.orderedHeadings[6] || "PRAYER")}</h3>
+<ol>
+  <li>It is respectfully prayed that this Honourable Court may graciously grant the principal relief sought: ${relief}.</li>
+  <li>Any other relief deemed just and proper in the circumstances may also be granted.</li>
+</ol>
+<h3>SIGNATURE</h3>
+<p>___________<br>ADVOCATE<br>for the Petitioner / Applicant / Complainant</p>
+<h3>VERIFICATION</h3>
+<p>Verified on oath at ___________ on this ${today} that the contents of the above paras are true and correct to the best of knowledge and belief, and nothing material has been concealed.</p>
+<p>___________<br>Petitioner / Deponent</p>
+<h3>AFFIDAVIT</h3>
+<p>I, ${clientName}, do hereby solemnly affirm that the facts stated in the accompanying pleading are true and correct to the best of my knowledge and belief.</p>
+<p>___________<br>Deponent</p>
+<h3>LIST OF ANNEXURES</h3>
+<ol>
+  <li>Copy of FIR / complaint / impugned order / relevant document: Annexure ___________.</li>
+  <li>Supporting documents, if any: Annexure ___________.</li>
+</ol>`;
+}
+
 async function regenerateCompleteDocument(prompt: string, incompleteHtml: string): Promise<string> {
   const retryPrompt = `${prompt}
 
@@ -139,6 +293,32 @@ Mandatory completion requirements:
 - Return ONLY complete valid HTML, no markdown or explanation.`;
 
   return cleanHtmlOutput(await tryGenerate(retryPrompt));
+}
+
+async function enforceCourtDraftingStandard(
+  prompt: string,
+  html: string,
+  request: string
+): Promise<string> {
+  const standard = getCourtDraftingStandard(request);
+  if (!standard.isCourtDocument) return html;
+
+  const firstAudit = auditCourtDraftStructure(html, standard);
+  if (firstAudit.valid) return html;
+
+  try {
+    const corrected = cleanHtmlOutput(await tryGenerate(
+      buildCourtReformatPrompt(prompt, html, standard, firstAudit.issues)
+    ));
+    const finalAudit = auditCourtDraftStructure(corrected, standard);
+    if (!finalAudit.valid) {
+      console.warn("Court draft structural audit still has issues:", finalAudit.issues);
+    }
+    return corrected || html;
+  } catch (err) {
+    console.warn("Court draft reformat failed; returning original draft:", err);
+    return html;
+  }
 }
 
 function cleanHtmlOutput(text: string): string {
@@ -181,6 +361,9 @@ async function generateSmartDocument(
     .join("\n");
 
   const today = todayFormatted();
+  const courtStandard = getCourtDraftingStandard(userRequest);
+  const intakeProfile = findCaseIntakeProfile({ sections: userRequest, documentNeeded: userRequest });
+  const corpusKnowledge = knowledgeBlock(intakeProfile);
 
   const prompt = `You are an expert Pakistani legal document drafter with advocate-level expertise. Draft a complete, professional legal document using the information provided.
 
@@ -190,6 +373,8 @@ User's Request: "${userRequest}"
 ${answersText ? `\nCollected Information:\n${answersText}` : ""}
 
 Output Language: ${isUrdu ? "Urdu (Urdu script only)" : "English"}
+${corpusKnowledge ? `\nANONYMIZED CORPUS-DERIVED LEGAL KNOWLEDGE:\n${corpusKnowledge}\n` : ""}
+${courtStandard.prompt}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CRITICAL RULES:
@@ -225,7 +410,7 @@ CRITICAL RULES:
 
 5. NEVER substitute document types. If user asked for agreement — write AGREEMENT, not affidavit.
 
-6. COURT DOCUMENTS (petitions, plaints/suits, bail, writ, appeal, revision, quashment, complaints) must follow this EXACT professional Pakistani structure, in this order:
+6. COURT DOCUMENTS must follow the injected CORPUS-BACKED COURT DRAFTING STANDARD exactly. Its opening order and family-specific headings override every general example below. These rules supplement that standard:
    a. CAUSE-TITLE / HEADING:
       - IN THE COURT OF ___________ / IN THE HON'BLE HIGH COURT OF ___________ (use user's provided court + district/city exactly)
       - Case number line on its own: e.g. "Bail Application No. _______ of 20__" / "Writ Petition No. _______ of 20__" / "Suit No. _______ of 20__" (correct document type, year blank as "20__" if not given)
@@ -235,7 +420,7 @@ CRITICAL RULES:
       "VERSUS"
       "[Name] S/o [Father], R/o [Address] .......... Respondent/Complainant/Defendant"
       Use "___________" for any part not provided. Add "The State" as respondent in criminal matters when no private respondent is given.
-   c. Subject line naming the document: e.g. "APPLICATION FOR POST-ARREST BAIL UNDER SECTION 497 Cr.P.C."
+   c. Subject line naming the exact document, followed by a separate enabling-provision line: e.g. "APPLICATION FOR POST-ARREST BAIL" then "UNDER SECTION 497 Cr.P.C."
    d. "RESPECTFULLY SHEWETH:" followed by NUMBERED FACTS paragraphs (1, 2, 3 …) — introductory facts, chronology, FIR/case/order details, what happened and when. Facts only state WHAT happened; do NOT argue law here.
    e. A SEPARATE "GROUNDS:" section after the facts — LETTERED paragraphs (a), (b), (c) … each a distinct legal argument (maintainability, jurisdiction, limitation if relevant, illegality/infirmity, merits, why relief is justified). This is where the law is argued — keep it distinct from Facts.
    f. "PRAYER:" — "It is, therefore, most respectfully prayed that …" with specific, numbered reliefs tailored to the document type, plus "any other relief deemed fit may also be granted."
@@ -253,10 +438,10 @@ CRITICAL RULES:
    - Relevant law sections must be accurate (PPC, Cr.P.C., CPC, Qanun-e-Shahadat 1984, Constitution of Pakistan 1973, relevant special laws).
    - NEVER assume Lahore, Karachi, Islamabad, or any other city if the user did not provide it.
    - NEVER infer the court rank/designation from document type. Do not write Sessions Judge, Additional Sessions Judge, Civil Judge, Family Court, or High Court unless the user provided it. If court name or district/city is missing, use "___________".
-   - If judgments/citations are provided as supporting research, use them only to shape legally sound facts, grounds, and relief.
+   - If authenticated judgments/citations and ratios are provided, apply each materially relevant authority within the specific legal ground it supports. Never alter its citation metadata or claimed ratio.
    - If the request states that no actual matching judgments were found, do NOT invent reported cases, citations, court names, or case titles. Draft from statutes, legal ingredients, collected facts, analogous legal principles, and AI-generated legal reasoning only.
    - Clearly distinguish actual cited judgments from AI-generated statutory/legal reasoning. If no actual citations were provided, do not present AI reasoning as case law.
-   - DO NOT add a standalone reliance paragraph such as "In this regard, reliance is placed on..." or "principles laid down in..." unless the user expressly asks to cite authorities in the draft.
+   - DO NOT add a standalone reliance paragraph, citation dump, or generic list of authorities. Integrate authenticated authority only into the exact ground it supports.
    - DO NOT list supporting judgments merely because they were used to prepare the case.
 
 7. AFFIDAVITS must include:
@@ -298,18 +483,29 @@ CRITICAL RULES:
 
 Generate the complete document as HTML now:`;
 
-  const raw = await tryGenerate(prompt);
-  let html = cleanHtmlOutput(raw);
-  for (let attempt = 0; attempt < 2 && isIncompleteLegalDocument(html); attempt++) {
-    html = await regenerateCompleteDocument(prompt, html);
+  let html: string;
+  try {
+    const raw = await tryGenerate(prompt);
+    html = cleanHtmlOutput(raw);
+  } catch (err) {
+    console.warn("AI generation failed; returning deterministic fallback draft:", err);
+    html = fallbackLegalDocument(userRequest, answers);
   }
-  html = repairIncompleteCourtDocument(html);
+  for (let attempt = 0; attempt < 2 && isIncompleteLegalDocument(html); attempt++) {
+    try {
+      html = await regenerateCompleteDocument(prompt, html);
+    } catch (err) {
+      console.warn("Document completion retry failed; returning best available draft:", err);
+      break;
+    }
+  }
   if (!hasExplicitCourtName(userRequest, answers)) {
     html = blankInferredCourtHeading(html);
   }
   if (isIncompleteLegalDocument(html)) {
-    throw new Error("The AI returned an incomplete document. Please generate again.");
+    console.warn("Generated document may still be incomplete after retries.");
   }
+  html = await enforceCourtDraftingStandard(prompt, html, userRequest);
   const blankCount = countBlanks(html);
   return { html, filledFields, blankCount };
 }

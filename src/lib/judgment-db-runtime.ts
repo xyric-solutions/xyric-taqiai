@@ -148,8 +148,8 @@ function extractCaseNo(content: string | null): string | null {
 }
 
 function dedupeKey(row: any): string {
-  if (row.content) return row.content.replace(/\s+/g, " ").trim().slice(0, 300).toLowerCase();
-  if (row.real_citation) return String(row.real_citation).toLowerCase();
+  if (row.real_citation) return `citation:${String(row.real_citation).replace(/[^a-z0-9]/gi, "").toUpperCase()}`;
+  if (row.content) return `content:${row.content.replace(/\s+/g, " ").trim().slice(0, 300).toLowerCase()}`;
   return `id:${row.id}`;
 }
 
@@ -208,6 +208,65 @@ function sectionVariants(query: string): string[] {
       ].filter((value) => value.length >= 2)
     )
   );
+}
+
+function statuteTagValues(query: string): string[] {
+  const match = query.match(/\b(\d{1,4})\s*[-/]?\s*([A-Za-z])?\b/);
+  if (!match) return [];
+
+  const base = match[1];
+  const suffix = match[2]?.toUpperCase() || "";
+  const compactSection = `${base}${suffix}`;
+  const dashedSection = suffix ? `${base}-${suffix}` : base;
+  const underscoredSection = suffix ? `${base}_${suffix}` : base;
+  const statutes: string[] = [];
+
+  if (/\bppc\b|pakistan penal code|qatl|murder|homicide/i.test(query)) statutes.push("PPC");
+  if (/\bcr\.?\s*p\.?\s*c\b|\bcrpc\b|code of criminal procedure/i.test(query)) statutes.push("CRPC");
+  if (/\bc\.?\s*p\.?\s*c\b|\bcpc\b|civil procedure/i.test(query)) statutes.push("CPC");
+  if (/\bqso\b|qanun|shahadat|evidence/i.test(query)) statutes.push("QSO");
+  if (/\bconstitution|article|art\./i.test(query)) statutes.push("CONSTITUTION");
+
+  // Bare section numbers are common in Case Builder. Try the main Pakistani
+  // statutes, with PPC first because criminal sections like 302/324/489-F are
+  // the most common bare-number inputs.
+  if (!statutes.length) statutes.push("PPC", "CRPC", "CPC");
+
+  const values: string[] = [];
+  for (const statute of Array.from(new Set(statutes))) {
+    values.push(`${statute}_${compactSection}`, `${statute}_${dashedSection}`, `${statute}_${underscoredSection}`);
+  }
+
+  return Array.from(new Set(values));
+}
+
+function statuteTagPrefixes(query: string): string[] {
+  const exact = statuteTagValues(query);
+  const match = query.match(/\b(\d{1,4})\s*[-/]?\s*([A-Za-z])?\b/);
+  if (!match) return [];
+  const hasSuffix = Boolean(match[2]);
+  if (hasSuffix) return exact;
+
+  return exact
+    .filter((value) => /_\d{1,4}$/.test(value))
+    .map((value) => `${value}%`);
+}
+
+function sectionRegexPattern(query: string): string | null {
+  const match = query.match(/\b(\d{1,4})\s*[-/]?\s*([A-Za-z])?\b/);
+  if (!match) return null;
+
+  const base = match[1];
+  const suffix = match[2]?.toUpperCase();
+  const section = suffix
+    ? `${base}\\s*[-/]?\\s*${suffix}`
+    : `${base}\\s*(?:[-/]?\\s*[A-Za-z])?`;
+
+  const statute = /ppc|pakistan penal code|murder|qatl|homicide/i.test(query)
+    ? "(?:P\\.?\\s*P\\.?\\s*C\\.?|PPC|Pakistan\\s+Penal\\s+Code)"
+    : "(?:P\\.?\\s*P\\.?\\s*C\\.?|PPC|Cr\\.?\\s*P\\.?\\s*C\\.?|CrPC|C\\.?\\s*P\\.?\\s*C\\.?|CPC|QSO|Constitution|Act|Ordinance)";
+
+  return `(?:\\m(?:s\\.?|sec\\.?|section|sections|ss\\.?)\\s*(?:no\\.?\\s*)?${section}\\M|\\m${section}\\s*[-,;:/()]*\\s*${statute}\\M)`;
 }
 
 // Reporter / court abbreviations that carry no content meaning â€” dropping them
@@ -355,15 +414,51 @@ export async function searchSectionJudgments(
 ): Promise<JudgmentSearchResult[]> {
   if (shouldUsePostgres()) {
     try {
+      const tagValues = statuteTagValues(query);
+      const tagPrefixes = statuteTagPrefixes(query);
+      const tagResults: JudgmentSearchResult[] = [];
+
+      if (tagValues.length || tagPrefixes.length) {
+        const tagParams: any[] = [tagValues, tagPrefixes];
+        const tagWhere = [
+          "j.processed = 1",
+          "(jt.tag_value = ANY($1::text[]) OR jt.tag_value ILIKE ANY($2::text[]))",
+        ];
+        addFilters(tagWhere, tagParams, { court, year, reportedOnly });
+        tagParams.push(Math.min(120, Math.max(limit + offset + 20, (offset + limit) * 2)));
+
+        const tagRows = await prisma.$queryRawUnsafe<any[]>(
+          `
+          SELECT j.id, j.citation, j.real_citation, j.court, j.year, j.title, j.processed,
+                 substr(j.content, 1, 4000) AS content,
+                 0 AS rank
+            FROM legal_judgment_tags jt
+            JOIN legal_judgments j ON j.id = jt.judgment_id
+            WHERE ${tagWhere.join(" AND ")}
+          ORDER BY (j.real_citation IS NOT NULL) DESC, ${courtPrioritySql("j")} ASC, j.year DESC, j.id ASC
+          LIMIT $${tagParams.length}
+        `,
+          ...tagParams
+        );
+
+        tagResults.push(...dedupeRows(tagRows, limit, offset).map((row) => toResult(row, query)));
+        if (tagResults.length >= limit) return tagResults.slice(0, limit);
+      }
+
       const variants = sectionVariants(query);
       const expr = anyExpr(variants.slice(0, 4));
-      if (!expr) return [];
+      if (!expr) return tagResults;
 
       // Inline the tsquery so the GIN index is used (see searchPg for details).
       const tsq = "websearch_to_tsquery('simple', $1)";
       const params: any[] = [expr];
       const where = ["j.processed = 1", `${textVectorSql("j")} @@ ${tsq}`];
       addFilters(where, params, { court, year, reportedOnly });
+      const sectionRegex = sectionRegexPattern(query);
+      if (sectionRegex) {
+        params.push(sectionRegex);
+        where.push(`COALESCE(j.content, '') ~* $${params.length}`);
+      }
       params.push(Math.min(300, Math.max(limit + offset + 20, (offset + limit) * 2)));
 
       const rows = await prisma.$queryRawUnsafe<any[]>(
@@ -373,12 +468,28 @@ export async function searchSectionJudgments(
                  ts_rank_cd(${textVectorSql("j")}, ${tsq}) AS rank
           FROM legal_judgments j
           WHERE ${where.join(" AND ")}
-          ORDER BY rank DESC, j.year DESC, ${courtPrioritySql("j")} ASC, j.id ASC
+          ORDER BY rank DESC, (j.real_citation IS NOT NULL) DESC, ${courtPrioritySql("j")} ASC, j.year DESC, j.id ASC
           LIMIT $${params.length}
         `,
         ...params
       );
-      return dedupeRows(rows, limit, offset).map((row) => toResult(row, query));
+      return dedupeRows(
+        [
+          ...tagResults.map((result) => ({
+            id: result.id,
+            citation: result.citation,
+            real_citation: result.reported ? result.citation : null,
+            court: result.court,
+            year: result.year,
+            title: result.title,
+            processed: result.processed,
+            content: result.passages.join(" "),
+          })),
+          ...rows,
+        ],
+        limit,
+        0
+      ).map((row) => toResult(row, query));
     } catch {
       return [];
     }

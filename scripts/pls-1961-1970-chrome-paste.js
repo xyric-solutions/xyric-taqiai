@@ -1,0 +1,205 @@
+/*
+ * PakistanLawSite 1961-1970 Chrome paste launcher.
+ *
+ * Paste this whole file into the Chrome DevTools Console while you are on the
+ * logged-in PakistanLawSite page. It does not store data inside Chrome. It
+ * connects the page to the local resilient capture server on 127.0.0.1:8781.
+ *
+ * Start the local server first:
+ *   D:\AI legal System\ai-legal-system\scripts\Start PLS 1961-1970 Fast Capture.bat
+ */
+(function pls1961To1970ChromeLauncher() {
+  "use strict";
+
+  var CONFIG = {
+    api: "http://127.0.0.1:8781",
+    years: "1961-1970",
+    expectedTotal: 9297,
+    workers: 3,
+    batch: 1,
+    delayMs: 250,
+    timeoutMs: 60000,
+    fetchRetries: 5,
+    sessionStopThreshold: 8,
+    sessionProbeMs: 60000,
+    sessionProbeMax: 5,
+    serverStartHint: 'Run this in PowerShell/CMD, not Chrome: "D:\\AI legal System\\ai-legal-system\\scripts\\Start PLS 1961-1970 Fast Capture.bat"'
+  };
+
+  function overlay(message, tone) {
+    var box = document.getElementById("codex-pls-1961-1970-launcher-status");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "codex-pls-1961-1970-launcher-status";
+      box.style.cssText = [
+        "position:fixed",
+        "z-index:2147483647",
+        "left:14px",
+        "bottom:14px",
+        "max-width:680px",
+        "padding:12px 14px",
+        "border-radius:7px",
+        "font:14px/1.35 Arial,sans-serif",
+        "color:#fff",
+        "background:#111",
+        "box-shadow:0 8px 28px rgba(0,0,0,.35)",
+        "white-space:pre-wrap"
+      ].join(";");
+      document.documentElement.appendChild(box);
+    }
+    var colors = {
+      ok: "#059669",
+      warn: "#92400e",
+      error: "#991b1b",
+      info: "#111827"
+    };
+    box.style.background = colors[tone || "info"] || colors.info;
+    box.textContent = message;
+  }
+
+  function stopPreviousRunners() {
+    try {
+      if (window.__codexPlsFastRunnerState) {
+        window.__codexPlsFastRunnerState.stop = true;
+      }
+    } catch (error) {}
+    try {
+      window.__codexPlsFastRunnerActive = false;
+    } catch (error) {}
+    try {
+      if (window.__codexPlsPgRunnerState) {
+        window.__codexPlsPgRunnerState.stop = true;
+      }
+    } catch (error) {}
+    try {
+      window.__codexPlsPgRunnerActive = false;
+    } catch (error) {}
+
+    Array.prototype.slice.call(document.querySelectorAll("script[src*='pls_runner.js']")).forEach(function (node) {
+      try {
+        node.remove();
+      } catch (error) {}
+    });
+  }
+
+  function withTimeout(promise, ms, label) {
+    var timer;
+    return Promise.race([
+      promise,
+      new Promise(function (_resolve, reject) {
+        timer = setTimeout(function () {
+          reject(new Error((label || "request") + " timed out after " + ms + "ms"));
+        }, ms);
+      })
+    ]).finally(function () {
+      clearTimeout(timer);
+    });
+  }
+
+  function fetchStatus() {
+    return withTimeout(
+      fetch(CONFIG.api + "/status?t=" + Date.now(), {
+        method: "GET",
+        mode: "cors",
+        cache: "no-store"
+      }).then(function (res) {
+        if (!res.ok) throw new Error("local server HTTP " + res.status);
+        return res.json();
+      }),
+      5000,
+      "local server status"
+    );
+  }
+
+  function injectRunner(status) {
+    stopPreviousRunners();
+    var src = CONFIG.api
+      + "/pls_runner.js?workers=" + encodeURIComponent(CONFIG.workers)
+      + "&batch=" + encodeURIComponent(CONFIG.batch)
+      + "&delay=" + encodeURIComponent(CONFIG.delayMs)
+      + "&timeout=" + encodeURIComponent(CONFIG.timeoutMs)
+      + "&fetchRetries=" + encodeURIComponent(CONFIG.fetchRetries)
+      + "&sessionStop=" + encodeURIComponent(CONFIG.sessionStopThreshold)
+      + "&sessionProbeMs=" + encodeURIComponent(CONFIG.sessionProbeMs)
+      + "&sessionProbeMax=" + encodeURIComponent(CONFIG.sessionProbeMax)
+      + "&force=1&t=" + Date.now();
+
+    var script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = function () {
+      overlay(
+        "PLS " + CONFIG.years + " runner loaded.\n"
+          + "Server completed=" + (status.completed || 0)
+          + " remaining=" + (status.remaining || 0)
+          + " manualReview=" + (status.manualReview || 0)
+          + "\nWorkers=" + CONFIG.workers + " batch=" + CONFIG.batch + " delay=" + CONFIG.delayMs + "ms",
+        "ok"
+      );
+    };
+    script.onerror = function () {
+      overlay(
+        "Could not load local runner from " + src + "\n\n"
+          + "Make sure the local capture server is running.\n"
+          + CONFIG.serverStartHint,
+        "error"
+      );
+    };
+    document.documentElement.appendChild(script);
+  }
+
+  function validatePage() {
+    if (!/pakistanlawsite\.com$/i.test(location.hostname)) {
+      overlay("Open the logged-in PakistanLawSite tab first, then paste this script again.", "error");
+      return false;
+    }
+    return true;
+  }
+
+  function validateServer(status) {
+    if (!status || status.years !== CONFIG.years) {
+      overlay(
+        "Local server is not serving the " + CONFIG.years + " range.\n"
+          + "Current server years: " + (status && status.years ? status.years : "unknown") + "\n\n"
+          + CONFIG.serverStartHint,
+        "error"
+      );
+      return false;
+    }
+    if (status.total && status.total !== CONFIG.expectedTotal) {
+      overlay(
+        "Warning: worklist total is " + status.total + ", expected " + CONFIG.expectedTotal + ".\n"
+          + "I will still load the runner because the year range is correct.",
+        "warn"
+      );
+    }
+    return true;
+  }
+
+  if (!validatePage()) return;
+
+  overlay("Checking local PLS " + CONFIG.years + " capture server on " + CONFIG.api + " ...", "info");
+  fetchStatus()
+    .then(function (status) {
+      if (!validateServer(status)) return;
+      if (status.paused) {
+        overlay(
+          "Local server is cooling down, but runner can be loaded.\n"
+            + "Reason: " + (status.pauseReason || "paused")
+            + "\nCompleted=" + (status.completed || 0)
+            + " remaining=" + (status.remaining || 0),
+          "warn"
+        );
+      }
+      injectRunner(status);
+    })
+    .catch(function (error) {
+      overlay(
+        "Local capture server is not reachable at " + CONFIG.api + ".\n\n"
+          + CONFIG.serverStartHint + "\n\n"
+          + "After the server starts, paste this Chrome script again.\n"
+          + "Error: " + (error && error.message ? error.message : error),
+        "error"
+      );
+    });
+})();
