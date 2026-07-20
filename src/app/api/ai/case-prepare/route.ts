@@ -328,12 +328,16 @@ Rules:
   searchTerms = {
     primaryTerms: uniqueTerms([
       ...(knowledgeProfile?.searchTerms || []),
+      ...(knowledgeProfile?.sectionRefs || []),
       ...directSectionTerms,
       ...caseTypeHint.terms,
       ...deterministicTerms,
       ...(Array.isArray(searchTerms.primaryTerms) ? searchTerms.primaryTerms : []),
-    ], 6),
-    secondaryTerms: uniqueTerms(Array.isArray(searchTerms.secondaryTerms) ? searchTerms.secondaryTerms : [], 3),
+    ], 8),
+    secondaryTerms: uniqueTerms([
+      ...(knowledgeProfile?.legalIngredients || []).flatMap((ingredient) => splitKeywordTerms(ingredient, 2)),
+      ...(Array.isArray(searchTerms.secondaryTerms) ? searchTerms.secondaryTerms : []),
+    ], 5),
     clientPosition: inferClientPosition(
       `${sections} ${facts || ""} ${documentNeeded || ""}`,
       searchTerms.clientPosition || caseTypeHint.position || knowledgeProfile?.clientPosition
@@ -343,7 +347,7 @@ Rules:
   // Step 2: Search DB with extracted terms
   const courtParam = court && court !== "All Courts" ? court : undefined;
   const yearParam = year && year !== "All years" ? year : undefined;
-  const allTerms = uniqueTerms([...searchTerms.primaryTerms, ...searchTerms.secondaryTerms], 5);
+  const allTerms = uniqueTerms([...searchTerms.primaryTerms, ...searchTerms.secondaryTerms], 8);
   const hasMappedSectionTerm = caseTypeHint.terms.some((term) => looksLikeSection(term));
 
   const candidates = await withTimeout(

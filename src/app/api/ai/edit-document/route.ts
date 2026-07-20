@@ -3,6 +3,7 @@ import { geminiGenerate } from "@/lib/gemini-helper";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { getSafeAiError } from "@/lib/ai-error";
+import { formatMonetaryAmountsInHtml } from "@/lib/pk-format";
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -41,6 +42,7 @@ INSTRUCTIONS:
 7. If user asks to remove something, remove it cleanly
 8. If user asks to change wording, replace only that part
 9. Preserve all proper nouns (names, CNIC numbers, addresses, dates)
+10. Format every monetary amount with Pakistani comma grouping and words, for example Rs. 1,00,000/- (Rupees One Lac Only) and Rs. 5,00,00,000/- (Rupees Five Crore Only). Never use million, billion, or trillion.
 
 Return ONLY the complete updated document as clean HTML (no markdown, no code fences, no explanations before or after). Just the HTML content.`;
 
@@ -62,6 +64,7 @@ Return ONLY the complete updated document as clean HTML (no markdown, no code fe
       cleaned = cleaned.trim();
     }
 
+    cleaned = formatMonetaryAmountsInHtml(cleaned);
     return NextResponse.json({ html: cleaned });
   } catch (error: unknown) {
     console.error("Edit document error:", error);

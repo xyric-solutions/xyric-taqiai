@@ -111,6 +111,12 @@ ol,ul { ${isUrdu ? "padding-right:20px;padding-left:0;" : "padding-left:20px;"} 
 li { margin-bottom:4px; line-height:${isUrdu ? "2.6" : "1.8"}; }
 table { border-collapse:collapse; width:100%; table-layout:fixed; word-wrap:break-word; break-inside:avoid; }
 td,th { border:1px solid #000; padding:4px 8px; word-wrap:break-word; overflow-wrap:break-word; }
+table[border="0"] td,table[border="0"] th { border:0; padding:2px 6px; vertical-align:top; }
+[data-document-format="vakalatnama"] { font-size:10pt; line-height:1.25; }
+[data-document-format="vakalatnama"] h2 { text-align:center; margin:0 0 8px; }
+[data-document-format="vakalatnama"] p { margin:0 0 4px; line-height:1.25; }
+[data-document-format="vakalatnama"] ol { margin:4px 0; padding-left:22px; }
+[data-document-format="vakalatnama"] li { margin-bottom:2px; line-height:1.25; }
 strong { font-weight:bold; }
 hr { border:none; border-top:1px solid #000; margin:12px 0; }
 h1,h2,h3,h4 { break-after:avoid; }
@@ -283,7 +289,7 @@ h1,h2,h3,h4 { break-after:avoid; }
             image: { type: "jpeg", quality: 0.98 },
             html2canvas: { scale: 2, useCORS: true, letterRendering: true },
             jsPDF: { unit: "mm", format: [LEGAL_PAGE_WIDTH_MM, LEGAL_PAGE_HEIGHT_MM], orientation: "portrait" },
-            pagebreak: { mode: ["avoid-all", "css", "legacy"] },
+            pagebreak: { mode: ["css", "legacy"] },
           })
           .from(wrapper)
           .save();

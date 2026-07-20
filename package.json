@@ -8,7 +8,10 @@
     "dev:webpack": "cross-env NODE_OPTIONS=--max-old-space-size=4096 next dev --webpack",
     "build": "prisma generate && cross-env NODE_OPTIONS=--max-old-space-size=4096 next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "validate:case-builder": "node scripts/validate-case-builder-profiles.mjs",
+    "validate:document-intake": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/validate-document-intake.mjs",
+    "validate:document-pagination": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/validate-document-pagination.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

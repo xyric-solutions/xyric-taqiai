@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { normalizeGeneratedHtml, textFromHtml } from "@/lib/document-html";
+import {
+  compactPaginationWhitespace,
+  isMeaningfulPaginationPage,
+  normalizeGeneratedHtml,
+  textFromHtml,
+} from "@/lib/document-html";
 import {
   AlignCenter,
   AlignJustify,
@@ -75,7 +80,9 @@ type FontKey = typeof FONT_OPTIONS[number]["key"];
 
 function normalizeForPages(html: string): string {
   const container = document.createElement("div");
-  container.innerHTML = normalizeGeneratedHtml(html, { preserveInlineStyles: true, preserveEmptyBlocks: true });
+  container.innerHTML = compactPaginationWhitespace(
+    normalizeGeneratedHtml(html, { preserveInlineStyles: true, preserveEmptyBlocks: true })
+  );
 
   for (let pass = 0; pass < 6; pass++) {
     if (container.children.length !== 1) break;
@@ -92,6 +99,12 @@ function normalizeForPages(html: string): string {
     const fragment = document.createDocumentFragment();
     while (el.firstChild) fragment.appendChild(el.firstChild);
     el.replaceWith(fragment);
+  });
+
+  container.querySelectorAll<HTMLElement>("[style]").forEach((element) => {
+    element.style.removeProperty("font-size");
+    element.style.removeProperty("line-height");
+    if (!element.getAttribute("style")?.trim()) element.removeAttribute("style");
   });
 
   container.querySelectorAll("ol, ul").forEach((node) => {
@@ -132,7 +145,9 @@ function normalizeForPages(html: string): string {
     el.replaceWith(fragment);
   });
 
-  return normalizeGeneratedHtml(container.innerHTML, { preserveInlineStyles: true, preserveEmptyBlocks: true });
+  return compactPaginationWhitespace(
+    normalizeGeneratedHtml(container.innerHTML, { preserveInlineStyles: true, preserveEmptyBlocks: true })
+  );
 }
 
 function escapeRegExp(value: string): string {
@@ -143,13 +158,6 @@ function htmlToPlainText(html: string): string {
   const el = document.createElement("div");
   el.innerHTML = html;
   return el.innerText || el.textContent || "";
-}
-
-function isMeaningfulHtml(html: string): boolean {
-  const container = document.createElement("div");
-  container.innerHTML = html;
-  const text = (container.textContent || "").replace(/\u00a0/g, " ").trim();
-  return !!text || !!container.querySelector("table,img,hr,input,textarea");
 }
 
 function isEmptyEditorElement(element: Element): boolean {
@@ -209,6 +217,32 @@ ${selector} th {
   border: 1px solid #000;
   padding: 4px 8px;
   word-wrap: break-word;
+}
+${selector} table[border="0"] td,
+${selector} table[border="0"] th {
+  border: 0;
+  padding: 2px 6px;
+  vertical-align: top;
+}
+${selector} [data-document-format="vakalatnama"] {
+  font-size: 10pt;
+  line-height: 1.25;
+}
+${selector} [data-document-format="vakalatnama"] h2 {
+  text-align: center;
+  margin: 0 0 8px;
+}
+${selector} [data-document-format="vakalatnama"] p {
+  margin: 0 0 4px;
+  line-height: 1.25;
+}
+${selector} [data-document-format="vakalatnama"] ol {
+  margin: 4px 0;
+  padding-left: 22px;
+}
+${selector} [data-document-format="vakalatnama"] li {
+  margin-bottom: 2px;
+  line-height: 1.25;
 }
 ${selector} ul,
 ${selector} ol {
@@ -315,7 +349,7 @@ export default function FullscreenDocModal({ html, language = "en", onClose, onS
     const fits = (items: Node[]) => measure(items) <= maxHeight + 2;
     const pushPage = () => {
       const html = serialize(pageNodes);
-      if (html.trim() && (output.length || isMeaningfulHtml(html) || pageNodes.length > 1)) output.push(html);
+      if (html.trim() && isMeaningfulPaginationPage(html)) output.push(html);
       pageNodes = [];
     };
     const cloneTextBlock = (sourceNode: Element, text: string) => {

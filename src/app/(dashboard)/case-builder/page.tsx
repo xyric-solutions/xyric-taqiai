@@ -40,6 +40,30 @@ interface Question {
   label: string;
   placeholder: string;
   required: boolean;
+  category?: "mandatory" | "procedural" | "evidence" | "limitation" | "jurisdiction" | "relief" | "optional" | "template";
+  source?: "profile" | "template" | "ai";
+}
+
+interface IntakeProfileSummary {
+  id: string;
+  title: string;
+  law: string;
+  matterType?: string;
+  sectionRefs?: string[];
+  legalIngredients?: string[];
+  evidenceChecklist?: string[];
+  riskFlags?: string[];
+  draftingGuidance?: string;
+  template?: { category: string; subType: string; name: string } | null;
+}
+
+interface ReadinessReport {
+  score: number;
+  confidence: "High" | "Medium" | "Low";
+  missing: string[];
+  requiredAnswered: number;
+  requiredTotal: number;
+  judgmentSupport: boolean;
 }
 
 interface JudgmentSearchItem {
@@ -72,7 +96,7 @@ const DOCUMENT_TYPES = [
   "Criminal Complaint",
   "Appeal",
   "Legal Notice",
-  "Vakalatnama",
+  "Vakalatnama / Vakalat Nama",
   "Power of Attorney",
   "Affidavit",
 ];
@@ -160,6 +184,73 @@ function FilledDetails({ items }: { items: { label: string; value: string }[] })
   );
 }
 
+function isIntentionalBlank(value?: string) {
+  return /^(unknown|not known|leave blank|blank|n\/a|na|___|___________)$/i.test((value || "").trim());
+}
+
+function questionAnswered(question: Question, answer?: string) {
+  return Boolean(answer?.trim()) || isIntentionalBlank(answer);
+}
+
+function confidenceFromScore(score: number): ReadinessReport["confidence"] {
+  if (score >= 85) return "High";
+  if (score >= 60) return "Medium";
+  return "Low";
+}
+
+function ReadinessPanel({
+  profile,
+  report,
+}: {
+  profile: IntakeProfileSummary | null;
+  report: ReadinessReport;
+}) {
+  if (!profile && report.requiredTotal === 0) return null;
+  const tone = report.confidence === "High" ? "#10b981" : report.confidence === "Medium" ? "#f59e0b" : "#ef4444";
+  return (
+    <Card className="p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Case Readiness</p>
+          <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+            {profile ? `${profile.title} - ${profile.law}` : "AI-guided matter"}
+          </p>
+          {profile?.template && (
+            <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>Template matched: {profile.template.name}</p>
+          )}
+        </div>
+        <div className="text-right">
+          <p className="text-2xl font-bold" style={{ color: tone }}>{report.score}%</p>
+          <p className="text-xs font-semibold" style={{ color: tone }}>{report.confidence} confidence</p>
+        </div>
+      </div>
+      <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--bg-surface-2)" }}>
+        <div className="h-full rounded-full" style={{ width: `${report.score}%`, background: tone }} />
+      </div>
+      <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+        Important facts answered: {report.requiredAnswered}/{report.requiredTotal || 0}. Judgment support: {report.judgmentSupport ? "found" : "not selected yet"}.
+      </p>
+      {report.missing.length > 0 && (
+        <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)", color: "#ef4444" }}>
+          Blank if skipped: {report.missing.slice(0, 5).join(", ")}{report.missing.length > 5 ? "..." : ""}
+        </div>
+      )}
+      {profile?.evidenceChecklist?.length ? (
+        <div className="text-xs space-y-1" style={{ color: "var(--text-tertiary)" }}>
+          <p className="font-semibold" style={{ color: "var(--text-secondary)" }}>Evidence checklist</p>
+          {profile.evidenceChecklist.slice(0, 3).map((item) => <p key={item}>- {item}</p>)}
+        </div>
+      ) : null}
+      {profile?.riskFlags?.length ? (
+        <div className="text-xs space-y-1" style={{ color: "var(--text-tertiary)" }}>
+          <p className="font-semibold" style={{ color: "var(--text-secondary)" }}>Risk flags</p>
+          {profile.riskFlags.slice(0, 3).map((item) => <p key={item}>- {item}</p>)}
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
 export default function CaseBuilderPage() {
   const [stage, setStage] = useState<Stage>("input");
   const [error, setError] = useState<string | null>(null);
@@ -194,6 +285,7 @@ export default function CaseBuilderPage() {
   const [sectionPurpose, setSectionPurpose] = useState("");
   const [intakeQuestions, setIntakeQuestions] = useState<Question[]>([]);
   const [intakeAnswers, setIntakeAnswers] = useState<Record<string, string>>({});
+  const [detectedProfile, setDetectedProfile] = useState<IntakeProfileSummary | null>(null);
 
   // Research results
   const [result, setResult] = useState<ResearchResult | null>(null);
@@ -265,6 +357,40 @@ export default function CaseBuilderPage() {
     ...providedDetails,
     ...answerDetails.filter((answer) => !providedDetails.some((item) => item.label === answer.label || item.value === answer.value)),
   ];
+
+  const requiredIntakeQuestions = intakeQuestions.filter((q) => q.required);
+  const requiredDraftQuestions = questions.filter((q) => q.required);
+  const requiredQuestionAnswers = [
+    ...requiredIntakeQuestions.map((q) => ({ question: q, value: intakeAnswers[q.id] })),
+    ...requiredDraftQuestions.map((q) => ({ question: q, value: answers[q.id] })),
+  ];
+  const requiredAnswered = requiredQuestionAnswers.filter(({ question, value }) => questionAnswered(question, value)).length;
+  const coreChecks = [
+    { label: "Law Sections / Case Type", done: Boolean(sections.trim()) },
+    { label: "Case Facts or Matter Purpose", done: Boolean(facts.trim() || sectionPurpose.trim()) },
+    { label: "Client Name", done: Boolean(clientName.trim()) },
+    { label: "Court Name", done: Boolean(courtName.trim()) || isIntentionalBlank(courtName) },
+    { label: "District / City", done: Boolean(districtName.trim()) || isIntentionalBlank(districtName) },
+    { label: "Relief / Document Needed", done: Boolean(documentNeeded.trim() || answers.final_relief_sought?.trim() || answers.relief_sought?.trim()) },
+  ];
+  const missingRequired = [
+    ...requiredQuestionAnswers
+      .filter(({ question, value }) => !questionAnswered(question, value))
+      .map(({ question }) => question.label),
+    ...coreChecks.filter((item) => !item.done).map((item) => item.label),
+  ];
+  const requiredTotal = requiredQuestionAnswers.length + coreChecks.length;
+  const totalAnswered = requiredAnswered + coreChecks.filter((item) => item.done).length;
+  const judgmentSupport = Boolean(result && result.judgments.length > 0);
+  const readinessScore = requiredTotal > 0 ? Math.round((totalAnswered / requiredTotal) * 100) : 0;
+  const readiness: ReadinessReport = {
+    score: Math.min(100, Math.max(0, readinessScore)),
+    confidence: confidenceFromScore(readinessScore),
+    missing: missingRequired,
+    requiredAnswered: totalAnswered,
+    requiredTotal,
+    judgmentSupport,
+  };
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -485,7 +611,7 @@ export default function CaseBuilderPage() {
       .filter(Boolean) as string[];
     if (qa.length) parts.push(qa.join("\n"));
     const missing = intakeQuestions
-      .filter((q) => q.required && !intakeAnswers[q.id]?.trim())
+      .filter((q) => q.required && !questionAnswered(q, intakeAnswers[q.id]))
       .map((q) => q.label);
     if (missing.length) {
       parts.push(`Missing case details to leave as blanks/placeholders: ${missing.join("; ")}`);
@@ -574,6 +700,7 @@ export default function CaseBuilderPage() {
       if (!res.ok) throw new Error(data.error || "Could not read the section");
       setSectionInterpretation(data.interpretation || "");
       setSectionAlternatives(Array.isArray(data.alternatives) ? data.alternatives : []);
+      setDetectedProfile(data.profile || null);
       setSectionPurpose(data.interpretation || sections);
       setStage("confirm");
     } catch {
@@ -603,6 +730,7 @@ export default function CaseBuilderPage() {
       const qs: Question[] = Array.isArray(data.questions) ? data.questions : [];
       setIntakeQuestions(qs);
       setIntakeAnswers({});
+      setDetectedProfile(data.profile || detectedProfile);
       setStage("details");
     } catch {
       setIntakeQuestions([]);
@@ -1006,6 +1134,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
     setSectionPurpose("");
     setIntakeQuestions([]);
     setIntakeAnswers({});
+    setDetectedProfile(null);
     setDocumentType("");
     setQuestions([]);
     setAnswers({});
@@ -1083,6 +1212,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
         )}
 
         <FilledDetails items={filledDetails} />
+        <ReadinessPanel profile={detectedProfile} report={readiness} />
 
         <Card className="p-6 space-y-5">
           {questions.length === 0 ? (
@@ -1096,7 +1226,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
           ) : (
             <>
               <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.22)", color: "var(--text-secondary)" }}>
-                You may generate now even if some fields are empty. Missing information will appear as <span className="font-semibold" style={{ color: "var(--text-primary)" }}>___________</span> in the draft.
+                Empty fields will be skipped and shown as <span className="font-semibold" style={{ color: "var(--text-primary)" }}>___________</span> in the draft.
               </div>
 
               {questions.map((q) => (
@@ -1104,7 +1234,6 @@ Client Position: ${result.searchTerms.clientPosition}`;
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                       {q.label}
-                      {q.required && <span style={{ color: "#ef4444" }}> *</span>}
                     </label>
                     {renderFieldMicButton(`draft:${q.id}`, q.label, (text) => appendDraftAnswer(q.id, text))}
                   </div>
@@ -1203,6 +1332,8 @@ Client Position: ${result.searchTerms.clientPosition}`;
         )}
 
         <FilledDetails items={filledDetails} />
+
+        <ReadinessPanel profile={detectedProfile} report={readiness} />
 
         <Card className="p-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
@@ -1482,6 +1613,8 @@ Client Position: ${result.searchTerms.clientPosition}`;
           </div>
         )}
 
+        <ReadinessPanel profile={detectedProfile} report={readiness} />
+
         <Card className="p-6 space-y-5">
           <div className="flex items-start gap-3">
             <div className="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: "rgba(6,182,212,0.15)" }}>
@@ -1647,8 +1780,6 @@ Client Position: ${result.searchTerms.clientPosition}`;
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                   {q.label}
-                  {q.required && <span style={{ color: "#ef4444" }}> *</span>}
-                  {!q.required && <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}> (optional)</span>}
                 </label>
                 {renderFieldMicButton(`intake:${q.id}`, q.label, (text) => appendIntakeAnswer(q.id, text))}
               </div>

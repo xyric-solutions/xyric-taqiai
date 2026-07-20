@@ -8,6 +8,7 @@ export default function PowerOfAttorneyPage() {
       description="Describe what you need — AI will ask follow-up questions and draft it for you"
       category="power-of-attorney"
       quickExamples={[
+        "Vakalatnama",
         "General power of attorney",
         "Special power of attorney for property",
         "Court appearance power of attorney",

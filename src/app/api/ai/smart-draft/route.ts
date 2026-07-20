@@ -4,6 +4,22 @@ import { isIncompleteLegalDocument, normalizeGeneratedHtml } from "@/lib/documen
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { findCaseIntakeProfile, knowledgeBlock } from "@/lib/case-builder-knowledge";
+import { getAllTemplates } from "@/templates";
+import type { FormField, TemplateDefinition } from "@/templates/types";
+import { VEHICLE_SALE_LEGAL_REQUIREMENTS } from "@/templates/agreements/vehicle-sale";
+import { buildVakalatnamaHtml } from "@/templates/power-of-attorney/vakalatnama";
+import { findAgreementCatalogItem } from "@/lib/agreement-catalog";
+import { getDocumentFieldExample } from "@/lib/document-field-examples";
+import { formatMonetaryAmountsInHtml, formatMonetaryRecord } from "@/lib/pk-format";
+import {
+  documentKnowledgeBlock,
+  filterDocumentIntakeValues,
+  findDocumentIntakeProfile,
+  mergeDocumentQuestions,
+  resolvePrimaryDocumentRequest,
+  type DocumentIntakeProfile,
+  type DocumentIntakeQuestion,
+} from "@/lib/document-intake-knowledge";
 import {
   auditCourtDraftStructure,
   buildCourtReformatPrompt,
@@ -125,6 +141,194 @@ function countBlanks(html: string): number {
   return (html.match(/___________/g) || []).length;
 }
 
+function toSnakeCase(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function templateSearchScore(
+  template: TemplateDefinition,
+  userRequest: string,
+  category?: string,
+  profile?: DocumentIntakeProfile | null
+): number {
+  if (category && template.category !== category) return -100;
+  const agreementMatch = category === "agreement" ? findAgreementCatalogItem(userRequest) : null;
+  const query = normalizeText(userRequest);
+  const candidate = normalizeText([
+    template.name,
+    template.nameUrdu,
+    template.description,
+    template.category,
+    template.subType,
+  ].join(" "));
+  const queryTokens = query.split(" ").filter((token) => token.length > 2);
+  const profileTokens = profile && category !== "agreement"
+    ? normalizeText([profile.title, profile.family, ...profile.aliases, ...profile.templateHints].join(" "))
+        .split(" ")
+        .filter((token) => token.length > 2)
+    : [];
+
+  let score = category && template.category === category ? 30 : 0;
+  if (agreementMatch?.subType === template.subType) score += 250;
+  if (candidate.includes(query) || query.includes(normalizeText(template.name))) score += 60;
+  for (const token of queryTokens) {
+    if (candidate.includes(token)) score += /\d/.test(token) ? 18 : 9;
+  }
+  for (const token of profileTokens) {
+    if (candidate.includes(token)) score += /\d/.test(token) ? 20 : 10;
+  }
+  if (category !== "agreement" && profile?.templateHints.some((hint) => normalizeText(template.subType).includes(normalizeText(hint)))) {
+    score += 65;
+  }
+  return score;
+}
+
+const GENERIC_TEMPLATE_QUERY_TOKENS = new Set([
+  "legal", "document", "draft", "prepare", "make", "need", "application",
+  "agreement", "contract", "deed", "petition", "case", "matter", "pakistan",
+]);
+
+function hasDirectTemplateSignal(template: TemplateDefinition, userRequest: string): boolean {
+  const rawQuery = userRequest.toLowerCase();
+  if (template.nameUrdu && rawQuery.includes(template.nameUrdu.toLowerCase())) return true;
+
+  const query = normalizeText(userRequest);
+  const name = normalizeText(template.name);
+  const subType = normalizeText(template.subType);
+  if (!query) return false;
+  if (query.includes(name) || (query.length >= 5 && name.includes(query)) || query.includes(subType)) return true;
+
+  const candidateTokens = new Set(normalizeText([
+    template.name,
+    template.description,
+    template.subType,
+  ].join(" ")).split(" ").filter(Boolean));
+  const meaningfulTokens = query
+    .split(" ")
+    .filter((token) => token.length > 2 && !GENERIC_TEMPLATE_QUERY_TOKENS.has(token));
+  if (meaningfulTokens.length === 0) return false;
+
+  const overlap = meaningfulTokens.filter((token) => candidateTokens.has(token)).length;
+  return overlap >= Math.min(2, meaningfulTokens.length);
+}
+
+function findMatchingDocumentTemplate(
+  userRequest: string,
+  category?: string,
+  profile?: DocumentIntakeProfile | null
+): TemplateDefinition | null {
+  if (profile?.id === "vakalatnama" || /\b(?:vakalat\s*nama|vakalatnama|wakalatnama)\b/i.test(userRequest)) {
+    return getAllTemplates().find((template) => template.subType === "vakalatnama") || null;
+  }
+
+  if (category === "agreement") {
+    const agreementMatch = findAgreementCatalogItem(userRequest);
+    if (agreementMatch) {
+      return getAllTemplates().find(
+        (template) => template.category === "agreement" && template.subType === agreementMatch.subType
+      ) || null;
+    }
+  }
+
+  const minimumScore = category === "agreement" ? 55 : 35;
+  const ranked = getAllTemplates()
+    .map((template) => ({
+      template,
+      score: templateSearchScore(template, userRequest, category, category === "agreement" ? null : profile),
+    }))
+    .filter((item) => item.score >= minimumScore && hasDirectTemplateSignal(item.template, userRequest))
+    .sort((first, second) => second.score - first.score);
+  return ranked[0]?.template || null;
+}
+
+function isGenericTemplateField(field: FormField): boolean {
+  const fieldName = toSnakeCase(field.name);
+  return new Set([
+    "signature",
+    "witness",
+    "witness_1",
+    "witness_2",
+    "city",
+    "execution_city",
+    "place_of_execution",
+    "agreement_date",
+    "execution_date",
+  ]).has(fieldName) || /^(signature|witness)_?\d*$/.test(fieldName);
+}
+
+function templateFieldToQuestion(
+  field: FormField,
+  language: string,
+  documentType: string
+): DocumentIntakeQuestion {
+  const label = language === "ur" ? field.labelUrdu || field.label : field.label;
+  return {
+    id: toSnakeCase(field.name),
+    label,
+    placeholder: getDocumentFieldExample({
+      id: field.name,
+      label,
+      documentType,
+      fieldType: field.type,
+      language,
+      providedExample: language === "ur" ? field.placeholderUrdu || field.placeholder : field.placeholder,
+      options: field.options,
+    }),
+    required: field.required,
+    category: "template",
+    source: "template",
+  };
+}
+
+function buildTemplateQuestions(template: TemplateDefinition | null, language: string): DocumentIntakeQuestion[] {
+  if (!template) return [];
+  return template.formFields
+    .filter((field) => field.required || field.aiSuggestable)
+    .filter((field) => template.subType === "vakalatnama" || !isGenericTemplateField(field))
+    .map((field) => templateFieldToQuestion(field, language, template.name))
+    .slice(0, 20);
+}
+
+function buildClassificationPayload(profile: DocumentIntakeProfile, template: TemplateDefinition | null) {
+  return {
+    id: profile.id,
+    title: profile.title,
+    family: profile.family,
+    category: template?.category || profile.categories.find((item) => item !== "*") || "general",
+    template: template ? { category: template.category, subType: template.subType, name: template.name } : null,
+    formatChecklist: profile.formatChecklist,
+    riskFlags: profile.riskFlags,
+    draftingGuidance: profile.draftingGuidance,
+  };
+}
+
+function hasCaseBuilderJudgmentContext(
+  userRequest: string,
+  answers: Record<string, string>,
+  category?: string
+): boolean {
+  if (category === "case-builder") return true;
+  if (answers.research_guidance_from_judgments?.trim()) return true;
+  if (answers.adverse_judgments_to_distinguish?.trim()) return true;
+  if (answers.no_matching_judgments?.trim()) return true;
+  if (answers.citation_policy?.trim()) return true;
+  return /authenticated judgments from the local database|case-building strategy|case builder/i.test(userRequest);
+}
+
+function questionPromptList(questions: DocumentIntakeQuestion[]): string {
+  return questions
+    .map((question) => `- ${question.id}: ${question.label}${question.required ? " (important)" : " (optional)"}`)
+    .join("\n");
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -158,9 +362,69 @@ function splitAuthorities(value: string | undefined): string[] {
     .slice(0, 5);
 }
 
+function fallbackVehicleSaleAgreement(answers: Record<string, string>, agreementDate: string): string {
+  const value = (patterns: RegExp[]) => escapeHtml(findAnswer(answers, patterns));
+  const sellerName = value([/^seller_name$/i, /seller.*name/i]);
+  const sellerFather = value([/seller.*father/i]);
+  const sellerCnic = value([/seller.*cnic/i]);
+  const sellerAddress = value([/seller.*address/i]);
+  const purchaserName = value([/^buyer_name$/i, /buyer.*name/i, /purchaser.*name/i]);
+  const purchaserFather = value([/buyer.*father/i, /purchaser.*father/i]);
+  const purchaserCnic = value([/buyer.*cnic/i, /purchaser.*cnic/i]);
+  const purchaserAddress = value([/buyer.*address/i, /purchaser.*address/i]);
+  const vehicleMake = value([/vehicle.*make/i, /^make$/i]);
+  const vehicleModel = value([/vehicle.*model/i, /^model$/i]);
+  const vehicleYear = value([/vehicle.*year/i, /manufacture.*year/i]);
+  const vehicleColor = value([/vehicle.*colou?r/i, /^colou?r$/i]);
+  const registrationNo = value([/registration/i]);
+  const engineNo = value([/engine/i]);
+  const chassisNo = value([/chassis/i]);
+  const vehicleCondition = value([/vehicle.*condition/i]);
+  const salePrice = value([/sale.*price/i, /consideration/i]);
+  const paymentTerms = value([/payment.*term/i]);
+  const transferDate = value([/transfer.*date/i, /handover.*date/i]);
+
+  return `
+<h2>VEHICLE SALE AGREEMENT</h2>
+<p>This Vehicle Sale Agreement is made and executed on ${escapeHtml(agreementDate)} at ___________.</p>
+<h3>BETWEEN</h3>
+<p><strong>${sellerName}</strong> S/o <strong>${sellerFather}</strong>, CNIC No. <strong>${sellerCnic}</strong>, resident of <strong>${sellerAddress}</strong> (hereinafter called the "SELLER" / Transferor).</p>
+<h3>AND</h3>
+<p><strong>${purchaserName}</strong> S/o <strong>${purchaserFather}</strong>, CNIC No. <strong>${purchaserCnic}</strong>, resident of <strong>${purchaserAddress}</strong> (hereinafter called the "PURCHASER" / Transferee).</p>
+<h3>VEHICLE DETAILS</h3>
+<table>
+  <tr><td><strong>Make / Company</strong></td><td>${vehicleMake}</td><td><strong>Model</strong></td><td>${vehicleModel}</td></tr>
+  <tr><td><strong>Year</strong></td><td>${vehicleYear}</td><td><strong>Color</strong></td><td>${vehicleColor}</td></tr>
+  <tr><td><strong>Registration No.</strong></td><td>${registrationNo}</td><td><strong>Engine No.</strong></td><td>${engineNo}</td></tr>
+  <tr><td><strong>Chassis No.</strong></td><td>${chassisNo}</td><td><strong>Condition</strong></td><td>${vehicleCondition}</td></tr>
+</table>
+<h3>TERMS AND CONDITIONS</h3>
+<ol>
+  <li><strong>Lawful Ownership and Authority:</strong> The Seller represents and warrants that the Seller is the lawful and beneficial owner of the Vehicle, has full authority to sell it, and that the stated particulars are true and correct.</li>
+  <li><strong>Clean Title:</strong> The Seller represents that the Vehicle is free from theft claims, bank finance, hypothecation, liens, encumbrances, court orders, superdari restrictions, and undisclosed third-party claims. Any title defect or pre-existing claim remains the Seller's responsibility.</li>
+  <li><strong>Voluntary Transaction:</strong> Both parties enter into this Agreement voluntarily, with free consent and sound understanding, without pressure, coercion, fraud, misrepresentation, or undue influence.</li>
+  <li><strong>Sale and Consideration:</strong> The agreed sale price is ${salePrice}. Payment has been made or shall be made strictly according to these Payment Terms: ${paymentTerms}. The Seller acknowledges only the amount actually stated as received.</li>
+  <li><strong>Inspection and Condition:</strong> The Purchaser confirms having inspected and, where practicable, test-checked the Vehicle and accepts its present condition on an as-is basis. This does not excuse fraud, concealment of a material defect, or defective title by the Seller.</li>
+  <li><strong>Delivery:</strong> Possession of the Vehicle, keys, and available original documents shall be delivered on ${transferDate}, as agreed by the parties.</li>
+  <li><strong>Pre-Agreement and Post-Agreement Liabilities:</strong> All liabilities, taxes, challans, fines, and legal responsibilities arising before the date of this Agreement shall remain the Seller's responsibility. From the date of this Agreement onward, all liabilities, taxes, challans, fines, and legal responsibilities relating to the possession, use, or operation of the Vehicle shall be the Purchaser's responsibility.</li>
+  <li><strong>Transfer of Ownership:</strong> Both parties shall promptly cooperate to transfer registration and ownership according to applicable law, including forms, signatures, biometric verification, Excise and Taxation formalities, and delivery of required original documents.</li>
+  <li><strong>Risk and Use:</strong> From the effective handover/agreement date, the Purchaser shall bear responsibility arising from possession, custody, use, operation, accidents, offences, and third-party claims, without affecting the Seller's responsibility for pre-agreement matters or title defects.</li>
+  <li><strong>Reciprocal Indemnity:</strong> The Seller shall indemnify the Purchaser against defective title, undisclosed encumbrances, and pre-agreement liabilities. The Purchaser shall indemnify the Seller against post-agreement possession, use, challans, taxes, accidents, offences, and claims.</li>
+  <li><strong>No Further Claim:</strong> After receipt of the agreed consideration and completion of the parties' obligations, the Seller shall have no ownership claim over the Vehicle, except for any unpaid amount expressly recorded in the Payment Terms.</li>
+  <li><strong>Entire Agreement and Amendment:</strong> This Agreement records the entire understanding concerning the Vehicle and may be amended only in writing signed by both parties.</li>
+  <li><strong>Governing Law and Jurisdiction:</strong> This Agreement is governed by the laws of Pakistan. Any unresolved dispute shall be subject to the competent courts at the place of execution.</li>
+  <li><strong>Effective Date:</strong> This Agreement becomes effective and binding on the date it is signed by both parties.</li>
+</ol>
+<table>
+  <tr><td><strong>SELLER</strong><br/><br/>Signature: ___________<br/>Name: ${sellerName}<br/>CNIC: ${sellerCnic}</td><td><strong>PURCHASER</strong><br/><br/>Signature: ___________<br/>Name: ${purchaserName}<br/>CNIC: ${purchaserCnic}</td></tr>
+  <tr><td><strong>WITNESS 1</strong><br/><br/>Signature: ___________<br/>Name: ___________<br/>CNIC: ___________</td><td><strong>WITNESS 2</strong><br/><br/>Signature: ___________<br/>Name: ___________<br/>CNIC: ___________</td></tr>
+</table>`;
+}
+
 function fallbackLegalDocument(
   userRequest: string,
-  answers: Record<string, string>
+  answers: Record<string, string>,
+  allowJudgmentContext = false
 ): string {
   const standard = getCourtDraftingStandard(userRequest);
   const today = escapeHtml(todayFormatted());
@@ -177,8 +441,8 @@ function fallbackLegalDocument(
   const policeStation = escapeHtml(findAnswer(answers, [/police/i, /station/i, /thana/i]));
   const relief = escapeHtml(findAnswer(answers, [/relief/i, /prayer/i, /direction/i]));
   const facts = escapeHtml(findAnswer(answers, [/facts/i, /case_facts/i, /background/i, /occurrence/i, /details/i]));
-  const authorities = splitAuthorities(answers.research_guidance_from_judgments);
-  const adverseAuthorities = splitAuthorities(answers.adverse_judgments_to_distinguish);
+  const authorities = allowJudgmentContext ? splitAuthorities(answers.research_guidance_from_judgments) : [];
+  const adverseAuthorities = allowJudgmentContext ? splitAuthorities(answers.adverse_judgments_to_distinguish) : [];
   const provided = Object.entries(answers)
     .filter(([, value]) => value?.trim())
     .slice(0, 18)
@@ -205,12 +469,17 @@ function fallbackLegalDocument(
 <p>___________</p>`;
   }
 
-  const authorityItems = authorities.length
-    ? authorities.map((authority) => `<li>The authenticated database authority ${escapeHtml(authority)} may be relied upon only for the specific legal proposition reflected in its supplied ratio and only where factually applicable.</li>`).join("")
-    : "<li>No authenticated judgment citation is inserted because no selected judgment was supplied for this ground. The argument is framed on statute, legal ingredients, and supplied facts only.</li>";
-  const adverseItems = adverseAuthorities.length
-    ? adverseAuthorities.map((authority) => `<li>The potentially adverse authenticated authority ${escapeHtml(authority)} should be distinguished on facts, evidence, procedural posture, or the exact statutory ingredient in issue.</li>`).join("")
-    : "<li>No adverse selected authority was supplied. Any authority later added by counsel should be addressed in the relevant ground instead of in a generic citation list.</li>";
+  const authorityItems = allowJudgmentContext
+    ? authorities.length
+      ? authorities.map((authority) => `<li>The authenticated database authority ${escapeHtml(authority)} may be relied upon only for the specific legal proposition reflected in its supplied ratio and only where factually applicable.</li>`).join("")
+      : "<li>No authenticated judgment citation is inserted because no selected judgment was supplied for this ground. The argument is framed on statute, legal ingredients, and supplied facts only.</li>"
+    : "<li>No judgment research is inserted in this All Documents draft. The argument is framed on statute, legal ingredients, and supplied facts only.</li>";
+  const adverseItems = allowJudgmentContext
+    ? adverseAuthorities.length
+      ? adverseAuthorities.map((authority) => `<li>The potentially adverse authenticated authority ${escapeHtml(authority)} should be distinguished on facts, evidence, procedural posture, or the exact statutory ingredient in issue.</li>`).join("")
+      : "<li>No adverse selected authority was supplied. Any authority later added by counsel should be addressed in the relevant ground instead of in a generic citation list.</li>"
+    : "";
+  const requestSource = allowJudgmentContext ? "Case Builder request" : "user's request";
 
   return `
 <h2>IN THE COURT OF ${courtName}${district !== "___________" ? `, ${district}` : ""}</h2>
@@ -219,11 +488,11 @@ function fallbackLegalDocument(
 <p><strong>VERSUS</strong></p>
 <p>${opponentName} S/o ${opponentFather}, R/o ${opponentAddress} .......... Respondent / Accused / Opposite Party</p>
 <h2>${escapeHtml(standard.label.toUpperCase())}</h2>
-<p><strong>UNDER THE RELEVANT PROVISIONS OF PAKISTANI LAW INCLUDING THE SECTIONS IDENTIFIED IN THE CASE BUILDER</strong></p>
+<p><strong>UNDER THE RELEVANT PROVISIONS OF PAKISTANI LAW IDENTIFIED FROM THE SUPPLIED FACTS</strong></p>
 <h3>RESPECTFULLY SHEWETH:</h3>
 <h3>${escapeHtml(standard.orderedHeadings[0] || "CASE PARTICULARS")}</h3>
 <ol>
-  <li>The petitioner/applicant/complainant seeks the indulgence of this Honourable Court in respect of the matter described in the Case Builder request: ${escapeHtml(userRequest)}.</li>
+  <li>The petitioner/applicant/complainant seeks the indulgence of this Honourable Court in respect of the matter described in the ${requestSource}: ${escapeHtml(userRequest)}.</li>
   <li>FIR/case number is ${firNo}; police station or relevant forum is ${policeStation}; remaining procedural particulars, if any, are left as ___________.</li>
 </ol>
 <h3>${escapeHtml(standard.orderedHeadings[1] || "PRELIMINARY SUBMISSIONS")}</h3>
@@ -351,10 +620,13 @@ function blankInferredCourtHeading(html: string): string {
 async function generateSmartDocument(
   userRequest: string,
   answers: Record<string, string>,
-  language: string
+  language: string,
+  category?: string,
+  documentRequest?: string
 ): Promise<{ html: string; filledFields: string[]; blankCount: number }> {
   const isUrdu = language === "ur";
-  const filledEntries = Object.entries(answers).filter(([, v]) => v?.trim());
+  const monetaryAnswers = formatMonetaryRecord(answers);
+  const filledEntries = Object.entries(monetaryAnswers).filter(([, v]) => v?.trim());
   const filledFields = filledEntries.map(([k, v]) => `${k}: ${v}`);
   const answersText = filledEntries
     .map(([k, v]) => `- ${k}: ${v}`)
@@ -362,8 +634,24 @@ async function generateSmartDocument(
 
   const today = todayFormatted();
   const courtStandard = getCourtDraftingStandard(userRequest);
-  const intakeProfile = findCaseIntakeProfile({ sections: userRequest, documentNeeded: userRequest });
-  const corpusKnowledge = knowledgeBlock(intakeProfile);
+  const isCaseBuilderDraft = hasCaseBuilderJudgmentContext(userRequest, answers, category);
+  const intakeProfile = isCaseBuilderDraft
+    ? findCaseIntakeProfile({ sections: userRequest, documentNeeded: userRequest })
+    : null;
+  const corpusKnowledge = intakeProfile ? knowledgeBlock(intakeProfile) : "";
+  const primaryDocumentRequest = resolvePrimaryDocumentRequest(documentRequest, userRequest);
+  const documentProfile = findDocumentIntakeProfile({ category, userRequest: primaryDocumentRequest });
+  const matchedTemplate = findMatchingDocumentTemplate(primaryDocumentRequest, category, documentProfile);
+  if (matchedTemplate?.subType === "vakalatnama") {
+    const html = buildVakalatnamaHtml(answers);
+    return { html, filledFields, blankCount: countBlanks(html) };
+  }
+  const documentIntakeKnowledge = documentKnowledgeBlock(documentProfile, matchedTemplate?.name, {
+    includeJudgmentPolicy: !isCaseBuilderDraft,
+  });
+  const exactTemplateRequirements = matchedTemplate?.subType === "vehicle-sale"
+    ? VEHICLE_SALE_LEGAL_REQUIREMENTS
+    : "";
 
   const prompt = `You are an expert Pakistani legal document drafter with advocate-level expertise. Draft a complete, professional legal document using the information provided.
 
@@ -373,7 +661,9 @@ User's Request: "${userRequest}"
 ${answersText ? `\nCollected Information:\n${answersText}` : ""}
 
 Output Language: ${isUrdu ? "Urdu (Urdu script only)" : "English"}
-${corpusKnowledge ? `\nANONYMIZED CORPUS-DERIVED LEGAL KNOWLEDGE:\n${corpusKnowledge}\n` : ""}
+${documentIntakeKnowledge ? `\nSTRUCTURED ALL DOCUMENTS CLASSIFICATION:\n${documentIntakeKnowledge}\n` : ""}
+${exactTemplateRequirements ? `\nEXACT TEMPLATE-SPECIFIC DRAFTING REQUIREMENTS:\n${exactTemplateRequirements}\n` : ""}
+${isCaseBuilderDraft && corpusKnowledge ? `\nCASE BUILDER KNOWLEDGE AND JUDGMENT CONTEXT:\n${corpusKnowledge}\n` : ""}
 ${courtStandard.prompt}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -390,6 +680,14 @@ CRITICAL RULES:
    - Example: user gave facts but no accused name → leave accused name as "___________"
    - A document with many blanks is CORRECT — a document with invented details is WRONG
    - NEVER add notes like "[not provided]", "[missing]", asterisks (*), or explanations for blanks — just "___________"
+
+3A. MONETARY AMOUNT FORMAT — MANDATORY FOR EVERY DOCUMENT:
+   - Every monetary amount must be written in both figures and words.
+   - Use the Pakistani numbering system with Pakistani comma grouping.
+   - Use this exact format: Rs. 1,00,000/- (Rupees One Lac Only).
+   - Another example: Rs. 5,00,00,000/- (Rupees Five Crore Only).
+   - Never use international million, billion, or trillion wording or comma grouping. Use Thousand, Lac, Crore, Arab, and Kharab only.
+   - Never write a numeric monetary amount without its words, including prices, rent, deposits, salaries, fees, damages, compensation, loans, taxes, fines, maintenance, dower, and costs.
 
 4. DRAFT THE EXACT DOCUMENT TYPE REQUESTED:
    - Bail Application → under Section 497/498 CrPC with all grounds
@@ -410,7 +708,15 @@ CRITICAL RULES:
 
 5. NEVER substitute document types. If user asked for agreement — write AGREEMENT, not affidavit.
 
-6. COURT DOCUMENTS must follow the injected CORPUS-BACKED COURT DRAFTING STANDARD exactly. Its opening order and family-specific headings override every general example below. These rules supplement that standard:
+VAKALATNAMA DOCUMENT TYPE RULE:
+- If the user asks for Vakalatnama, Vakalat Nama, Wakalatnama, vakalat, or advocate authority, draft a court Vakalatnama, not a General Power of Attorney.
+- Use the supplied sample-format POWER OF ATTORNEY layout with court and cause-title lines, fixed role lists, V E R S U S, advocate appointment, four powers, client signature/thumb-impression line, and advocate acceptance blocks.
+- Never copy personal details from the sample. Leave each missing user-specific value as "___________".
+- It must appoint an advocate for court representation in the identified case only.
+- Include client/executant details, advocate details, court name, case title/number, client role, authority to appear/plead/act/sign/file/receive notices and copies, client signature, and advocate acceptance signature.
+- Use "___________" for every missing court, case number, party role, city, date, CNIC, address, or bar license.
+
+6. COURT DOCUMENTS must follow the injected Pakistani court drafting standard exactly. Its opening order and family-specific headings override every general example below. These rules supplement that standard:
    a. CAUSE-TITLE / HEADING:
       - IN THE COURT OF ___________ / IN THE HON'BLE HIGH COURT OF ___________ (use user's provided court + district/city exactly)
       - Case number line on its own: e.g. "Bail Application No. _______ of 20__" / "Writ Petition No. _______ of 20__" / "Suit No. _______ of 20__" (correct document type, year blank as "20__" if not given)
@@ -438,11 +744,13 @@ CRITICAL RULES:
    - Relevant law sections must be accurate (PPC, Cr.P.C., CPC, Qanun-e-Shahadat 1984, Constitution of Pakistan 1973, relevant special laws).
    - NEVER assume Lahore, Karachi, Islamabad, or any other city if the user did not provide it.
    - NEVER infer the court rank/designation from document type. Do not write Sessions Judge, Additional Sessions Judge, Civil Judge, Family Court, or High Court unless the user provided it. If court name or district/city is missing, use "___________".
-   - If authenticated judgments/citations and ratios are provided, apply each materially relevant authority within the specific legal ground it supports. Never alter its citation metadata or claimed ratio.
+${isCaseBuilderDraft ? `   - If authenticated judgments/citations and ratios are provided, apply each materially relevant authority within the specific legal ground it supports. Never alter its citation metadata or claimed ratio.
    - If the request states that no actual matching judgments were found, do NOT invent reported cases, citations, court names, or case titles. Draft from statutes, legal ingredients, collected facts, analogous legal principles, and AI-generated legal reasoning only.
    - Clearly distinguish actual cited judgments from AI-generated statutory/legal reasoning. If no actual citations were provided, do not present AI reasoning as case law.
    - DO NOT add a standalone reliance paragraph, citation dump, or generic list of authorities. Integrate authenticated authority only into the exact ground it supports.
-   - DO NOT list supporting judgments merely because they were used to prepare the case.
+   - DO NOT list supporting judgments merely because they were used to prepare the case.` : `   - Do NOT add judgment research, case-law search results, selected judgments, or a separate authorities section in All Documents.
+   - Do NOT invent reported cases, citations, court names, or case titles.
+   - If the user supplied a citation in the request, treat it only as user-supplied text and do not claim it came from research.`}
 
 7. AFFIDAVITS must include:
    - Title: AFFIDAVIT
@@ -489,7 +797,9 @@ Generate the complete document as HTML now:`;
     html = cleanHtmlOutput(raw);
   } catch (err) {
     console.warn("AI generation failed; returning deterministic fallback draft:", err);
-    html = fallbackLegalDocument(userRequest, answers);
+    html = matchedTemplate?.subType === "vehicle-sale"
+      ? fallbackVehicleSaleAgreement(monetaryAnswers, today)
+      : fallbackLegalDocument(userRequest, monetaryAnswers, isCaseBuilderDraft);
   }
   for (let attempt = 0; attempt < 2 && isIncompleteLegalDocument(html); attempt++) {
     try {
@@ -506,6 +816,7 @@ Generate the complete document as HTML now:`;
     console.warn("Generated document may still be incomplete after retries.");
   }
   html = await enforceCourtDraftingStandard(prompt, html, userRequest);
+  html = formatMonetaryAmountsInHtml(html);
   const blankCount = countBlanks(html);
   return { html, filledFields, blankCount };
 }
@@ -518,7 +829,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { action, userRequest, answers, language } = await request.json();
+    const { action, userRequest, documentRequest, answers, language, category } = await request.json();
 
     if (!userRequest?.trim()) {
       return NextResponse.json({ error: "Please describe what document you need." }, { status: 400 });
@@ -528,17 +839,59 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Request is too long (max 5000 characters)" }, { status: 400 });
     }
 
+    const requestCategory = typeof category === "string" ? category : undefined;
+    const primaryDocumentRequest = resolvePrimaryDocumentRequest(documentRequest, userRequest);
+    if (primaryDocumentRequest.length > 1000) {
+      return NextResponse.json({ error: "Document type request is too long (max 1000 characters)" }, { status: 400 });
+    }
+    const structuredProfile = findDocumentIntakeProfile({ category: requestCategory, userRequest: primaryDocumentRequest });
+    const matchedTemplate = findMatchingDocumentTemplate(primaryDocumentRequest, requestCategory, structuredProfile);
+    const templateQuestions = buildTemplateQuestions(matchedTemplate, language || "en");
+    const classification = buildClassificationPayload(structuredProfile, matchedTemplate);
+    const requestAnswers: Record<string, string> = answers || {};
+    const isCaseBuilderRequest = hasCaseBuilderJudgmentContext(userRequest, requestAnswers, requestCategory);
+    const questionLimit = requestCategory === "agreement" ? 20 : 12;
+    const templateLocked = Boolean(matchedTemplate && templateQuestions.length > 0);
+    const deterministicQuestions = templateLocked
+      ? templateQuestions.slice(0, questionLimit)
+      : [];
+    const fallbackQuestions = templateLocked
+      ? deterministicQuestions
+      : structuredProfile.questions.slice(0, questionLimit);
+    const lockedQuestionText = templateLocked
+      ? questionPromptList(deterministicQuestions)
+      : "- No exact template matched. Create a new question set only for the exact document identified from the user's request.";
+
     // Step 1: Analyze user request, decide if questions needed
     if (action === "analyze") {
       const analyzePrompt = `You are a professional Pakistani Legal Drafting Assistant. Your job is to ALWAYS collect required information before drafting any legal document.
 
-User Request: "${userRequest}"
+Exact Document Requested: "${primaryDocumentRequest}"
+${primaryDocumentRequest !== userRequest.trim() ? `\nSupplemental facts and instructions (must not change the document classification):\n${userRequest}` : ""}
+
+STRUCTURED ALL DOCUMENTS PROFILE SELECTED BY APP:
+${documentKnowledgeBlock(structuredProfile, matchedTemplate?.name, { includeJudgmentPolicy: !isCaseBuilderRequest })}
+
+EXACT DOCUMENT LOCK:
+${matchedTemplate
+  ? `The app matched "${matchedTemplate.name}" (${matchedTemplate.subType}). This classification is authoritative. Do not substitute another document type.`
+  : "No registered template matched. Identify one exact document type before writing any questions."}
+
+AUTHORITATIVE QUESTION SET:
+${lockedQuestionText}
 
 STEP 1 — Identify the exact document type.
 STEP 2 — Extract any information already provided in the request.
 STEP 3 — Determine which essential fields are still missing and ask for them.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+QUESTION ISOLATION RULES:
+- Every question must be directly necessary for the exact identified document.
+- Never borrow a field, placeholder, role, or assumption from another document type.
+- For a matched template, do not add, replace, broaden, or reinterpret the authoritative question set.
+- A vehicle, car, or motorcycle sale must never ask about rent, tenancy, landlord, tenant, premises, monthly rent, security deposit, or lease duration.
+- A rent or lease document must never ask for vehicle engine, chassis, registration, or vehicle condition unless the user expressly requests a vehicle lease.
+
 MANDATORY QUESTION RULES BY DOCUMENT TYPE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -551,6 +904,7 @@ FOR AFFIDAVITS (General, Property, Identity, Income, Character, Residence, NOC, 
     - General: affidavit_purpose (specific subject of the affidavit)
 
 FOR AGREEMENTS (Rent, Sale, Partnership, Employment, Loan, Service, MOU, NDA, etc.):
+  The exact subtype governs every question. Use Seller/Buyer for a sale, Landlord/Tenant for rent, Employer/Employee for employment, and Lender/Borrower for a loan. Never mix these roles.
   MANDATORY for BOTH parties — ask ALL of these, never skip:
     party1_name      → "Name of Seller / Owner / First Party"
     party1_father    → "Father's Name of Seller / First Party"   ← REQUIRED, never skip
@@ -560,11 +914,11 @@ FOR AGREEMENTS (Rent, Sale, Partnership, Employment, Loan, Service, MOU, NDA, et
     party2_father    → "Father's Name of Buyer / Second Party"   ← REQUIRED, never skip
     party2_cnic      → "CNIC of Buyer / Second Party"
     party2_address   → "Address of Buyer / Second Party"
-  Financial: amount (rent/price/loan amount), advance_deposit
-  Terms: start_date, duration
-  Property (if rent/sale): property_address, property_type, property_size
-  Special: special_conditions (any extra clauses, optional)
-  NOTE: For agreements allow up to 12 questions — party details are all required
+  Financial: ask only the exact consideration relevant to this agreement, such as sale price, rent, loan amount, or service fee.
+  Terms: ask only dates, duration, delivery, possession, transfer, or termination facts that apply to this agreement.
+  Subject: ask only the exact property, vehicle, goods, services, employment, finance, or business details involved.
+  Never ask for rent, deposit, property size, lease duration, or tenancy details unless the requested agreement is actually a rent, lease, or tenancy document.
+  NOTE: For agreements allow up to 20 questions so the matched agreement template can collect complete party, asset, financial, delivery, and special-condition details.
 
 FOR APPLICATIONS (FIR, Bail, Court Application, NOC, Character Certificate, DC Office, etc.):
   Always ask: applicant_name, father_name, cnic, address
@@ -587,12 +941,17 @@ FOR FAMILY LAW (Khula, Talaq, Custody, Maintenance, Nikah Nama, Divorce Notice):
 FOR POWER OF ATTORNEY:
   Always ask: principal_name, principal_cnic, attorney_name, attorney_cnic, authority_scope, purpose
 
+FOR VAKALATNAMA / VAKALAT NAMA / WAKALATNAMA:
+  Always ask: client_name, client_father_name, client_cnic, client_address, advocate_name, advocate_bar_id, court_name, case_title, case_number, party_role
+  It is NOT a General Power of Attorney. Keep authority limited to appearing, pleading, acting, signing/filing case papers, receiving notices/copies, and conducting the court case.
+  Include advocate acceptance/signature block. Use blanks for missing court, case number, party role, city, date, CNIC, or bar license.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STRICT RULES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. NEVER return empty "questions" array for affidavits, agreements, or applications — at minimum always ask for names, CNIC, and address if not already given.
 2. Extract information already provided in user's request into "extractedInfo" — do NOT ask again for fields already given.
-3. Ask only the truly missing fields — maximum 8 questions for most documents, up to 12 for agreements (because both party full details are mandatory).
+3. Ask only the truly missing fields — maximum 8 questions for most documents, up to 20 for agreements when the matched template requires transaction-specific details.
 4. Write question labels in the SAME LANGUAGE the user used (Urdu, Roman Urdu, or English).
 5. Field IDs must be snake_case English (e.g. "seller_name", "property_address", "rent_amount").
 6. Placeholders must be realistic Pakistani examples — written in the DOCUMENT LANGUAGE:
@@ -639,48 +998,87 @@ Return ONLY a valid JSON object — no markdown, no explanation, nothing else:
         const cleaned = raw.replace(/```json\n?/gi, "").replace(/```\n?/gi, "").trim();
         parsed = JSON.parse(cleaned);
       } catch {
-        const result = await generateSmartDocument(userRequest, {}, language || "en");
-        return NextResponse.json({ action: "generated", html: result.html, blankCount: result.blankCount, documentType: "" });
-      }
-
-      const alwaysAskTypes = ["affidavit", "agreement", "application", "power of attorney", "poa", "deed", "contract", "notice", "petition", "suit"];
-      const docTypeLower = (parsed.documentType || "").toLowerCase();
-      const requestLower = userRequest.toLowerCase();
-      const mustAsk = alwaysAskTypes.some(t => docTypeLower.includes(t) || requestLower.includes(t));
-
-      if (!mustAsk && (!parsed.questions || parsed.questions.length === 0)) {
-        const result = await generateSmartDocument(userRequest, parsed.extractedInfo || {}, language || "en");
         return NextResponse.json({
-          action: "generated",
-          html: result.html,
-          blankCount: result.blankCount,
-          documentType: parsed.documentType || "",
+          action: "ask",
+          documentType: matchedTemplate?.name || structuredProfile.title,
+          documentTypeUrdu: "",
+          extractedInfo: {},
+          questions: fallbackQuestions,
+          sectionWarning: null,
+          classification,
         });
       }
 
-      if (parsed.questions && parsed.questions.length === 0 && mustAsk) {
-        parsed.questions = [
-          { id: "full_name", label: "Full Name / پورا نام", placeholder: "e.g. Muhammad Ahmed", required: true },
-          { id: "father_name", label: "Father's Name / والد کا نام", placeholder: "e.g. Muhammad Ali", required: true },
-          { id: "cnic", label: "CNIC Number", placeholder: "e.g. 35201-1234567-1", required: true },
-          { id: "address", label: "Complete Address / مکمل پتہ", placeholder: "e.g. House 12, Street 4, Faisalabad", required: true },
-        ];
-      }
+      const parsedExtractedInfo: Record<string, unknown> = parsed.extractedInfo || {};
+      const extractedInfo = templateLocked
+        ? filterDocumentIntakeValues(parsedExtractedInfo, deterministicQuestions)
+        : Object.fromEntries(
+            Object.entries(parsedExtractedInfo).filter(([, value]) => typeof value === "string")
+          ) as Record<string, string>;
+      const aiQuestions: DocumentIntakeQuestion[] = Array.isArray(parsed.questions)
+        ? parsed.questions
+            .filter((question) => question?.id && question?.label)
+            .map((question) => ({
+              id: String(question.id),
+              label: String(question.label),
+              placeholder: String(question.placeholder || ""),
+              required: Boolean(question.required),
+              category: "facts",
+              source: "ai",
+            }))
+        : [];
+      const supplementalAiQuestions = templateLocked
+        ? []
+        : aiQuestions;
+
+      const exactQuestions = templateLocked
+        ? deterministicQuestions
+        : supplementalAiQuestions.length > 0
+          ? supplementalAiQuestions
+          : fallbackQuestions;
+      const exactDocumentType = matchedTemplate?.name || parsed.documentType || structuredProfile.title;
+      const contextualQuestions = exactQuestions.map((question) => ({
+        ...question,
+        placeholder: getDocumentFieldExample({
+          id: question.id,
+          label: question.label,
+          documentType: exactDocumentType,
+          language: language || "en",
+          providedExample: question.placeholder,
+        }),
+      }));
+      const mergedQuestions = mergeDocumentQuestions(contextualQuestions)
+        .filter((question) => !extractedInfo[question.id]?.trim())
+        .slice(0, questionLimit);
 
       return NextResponse.json({
         action: "ask",
-        documentType: parsed.documentType || "",
+        documentType: exactDocumentType,
         documentTypeUrdu: parsed.documentTypeUrdu || "",
-        extractedInfo: parsed.extractedInfo || {},
-        questions: parsed.questions,
+        extractedInfo,
+        questions: mergedQuestions,
         sectionWarning: parsed.sectionWarning || null,
+        classification,
       });
     }
 
     // Step 2: Generate with user's answers
     if (action === "generate") {
-      const result = await generateSmartDocument(userRequest, answers || {}, language || "en");
-      return NextResponse.json({ action: "generated", html: result.html, blankCount: result.blankCount });
+      const normalizedAnswers: Record<string, string> = requestAnswers;
+      const result = await generateSmartDocument(
+        userRequest,
+        normalizedAnswers,
+        language || "en",
+        requestCategory,
+        primaryDocumentRequest
+      );
+      return NextResponse.json({
+        action: "generated",
+        html: result.html,
+        blankCount: result.blankCount,
+        documentType: matchedTemplate?.name || structuredProfile.title,
+        classification,
+      });
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });

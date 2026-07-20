@@ -7,7 +7,7 @@ import {
   Home, Bot, Library, PenLine, Handshake, FilePlus,
   HeartHandshake, ShieldAlert, Building2, Scale, Briefcase,
   Calculator, Globe, Landmark, Users, Folder, Gavel,
-  Languages, Settings,
+  Languages, Settings, FileSignature,
   ChevronDown, X, ScrollText, LogOut, ScanLine, Mic, Layers,
 } from "lucide-react";
 import { useSidebarCollapsed, setSidebarCollapsed } from "@/lib/sidebar-store";
@@ -26,6 +26,7 @@ const researchItems = [
 const draftItems = [
   { name: "Voice Case",      href: "/voice-case",         icon: Mic           },
   { name: "Copy from Photo", href: "/copy-from-photo",    icon: ScanLine      },
+  { name: "Vakalatnama",     href: "/power-of-attorney?draft=Vakalatnama", icon: FileSignature },
   { name: "Affidavits",      href: "/affidavits",        icon: PenLine       },
   { name: "Agreements",      href: "/agreements",         icon: Handshake     },
   { name: "Applications",    href: "/applications",       icon: FilePlus      },
@@ -89,6 +90,11 @@ function NavItem({ href, icon: Icon, name, badge, collapsed }: { href: string; i
   return (
     <Link
       href={href}
+      onClick={() => {
+        if (href === "/agreements" && pathname === "/agreements") {
+          window.dispatchEvent(new Event("taqi:show-agreement-library"));
+        }
+      }}
       aria-label={name}
       title={collapsed ? name : undefined}
       className="relative flex items-center h-9 rounded-md text-[13px] font-medium overflow-hidden transition-colors"

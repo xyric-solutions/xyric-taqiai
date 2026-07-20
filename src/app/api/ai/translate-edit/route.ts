@@ -3,6 +3,7 @@ import { geminiGenerate } from "@/lib/gemini-helper";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { getSafeAiError } from "@/lib/ai-error";
+import { formatMonetaryAmountsInHtml } from "@/lib/pk-format";
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -28,6 +29,7 @@ RULES:
 - Do NOT add new rows, columns, or sections unless explicitly asked
 - Do NOT change field labels — only change the values/content inside <td>, <strong>, or text nodes
 - Return ONLY the complete modified HTML, no explanations, no markdown fences
+- Format monetary amounts with Pakistani comma grouping and words: use Rs., Thousand, Lac, Crore, Arab, and Kharab; never million, billion, or trillion
 
 CURRENT HTML DOCUMENT:
 ${html}`;
@@ -35,11 +37,11 @@ ${html}`;
     const updated = await geminiGenerate(prompt);
 
     // Strip any accidental markdown fences
-    const clean = updated
+    const clean = formatMonetaryAmountsInHtml(updated
       .replace(/^```html\s*/i, "")
       .replace(/^```\s*/i, "")
       .replace(/```\s*$/i, "")
-      .trim();
+      .trim());
 
     return NextResponse.json({ html: clean });
   } catch (error: unknown) {

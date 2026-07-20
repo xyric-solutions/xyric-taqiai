@@ -168,11 +168,14 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
   )?.[1] ?? "TaqiAI";
 
   const selectItem = useCallback((href: string) => {
+    if (href === "/agreements" && pathname === "/agreements") {
+      window.dispatchEvent(new Event("taqi:show-agreement-library"));
+    }
     router.push(href);
     setQuery("");
     setOpen(false);
     inputRef.current?.blur();
-  }, [router]);
+  }, [pathname, router]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!open || results.length === 0) return;

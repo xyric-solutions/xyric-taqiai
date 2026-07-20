@@ -67,7 +67,7 @@ export default function FamilyLawTypePage() {
       {loading ? (
         <Card className="p-12"><div className="text-center space-y-4"><LoadingSpinner size="lg" /><p className="text-slate-600">Generating document...</p></div></Card>
       ) : mode === "form" ? (
-        <Card className="p-4 sm:p-6"><DynamicForm fields={template.formFields} onSubmit={handleSubmit} loading={loading} language={language} /></Card>
+        <Card className="p-4 sm:p-6"><DynamicForm fields={template.formFields} onSubmit={handleSubmit} loading={loading} language={language} documentType={template.name} /></Card>
       ) : (
         <Card className="p-4 sm:p-6">
           <div className="mb-4">

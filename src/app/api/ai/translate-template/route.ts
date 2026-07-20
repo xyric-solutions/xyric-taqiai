@@ -4,6 +4,7 @@ import { getTranslationTemplate } from "@/templates/translations";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { getSafeAiError } from "@/lib/ai-error";
+import { formatMonetaryAmountsInHtml } from "@/lib/pk-format";
 
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
@@ -81,7 +82,7 @@ ${text}`;
     }
 
     // Build the final HTML using the template
-    const html = template.buildHtml(fields);
+    const html = formatMonetaryAmountsInHtml(template.buildHtml(fields));
 
     return NextResponse.json({ html, fields });
   } catch (error: unknown) {

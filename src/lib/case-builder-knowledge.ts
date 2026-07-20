@@ -3,6 +3,8 @@ export interface CaseDetailQuestion {
   label: string;
   placeholder: string;
   required: boolean;
+  category?: "mandatory" | "procedural" | "evidence" | "limitation" | "jurisdiction" | "relief" | "optional" | "template";
+  source?: "profile" | "template" | "ai";
 }
 
 export interface CaseIntakeProfile {
@@ -12,21 +14,112 @@ export interface CaseIntakeProfile {
   matterType: string;
   sectionRefs: string[];
   ingredients: string[];
+  legalIngredients: string[];
   questions: CaseDetailQuestion[];
+  mandatoryQuestions: CaseDetailQuestion[];
+  optionalQuestions: CaseDetailQuestion[];
+  proceduralQuestions: CaseDetailQuestion[];
+  evidenceChecklist: string[];
+  limitationQuestions: CaseDetailQuestion[];
+  jurisdictionQuestions: CaseDetailQuestion[];
+  reliefQuestions: CaseDetailQuestion[];
+  riskFlags: string[];
+  documentTypeMappings: string[];
   searchTerms: string[];
   clientPosition: "prosecution" | "defence" | "petitioner" | "respondent" | "appellant";
   draftingGuidance: string;
   draftingSourceNote?: string;
 }
 
-const q = (id: string, label: string, placeholder: string, required = true): CaseDetailQuestion => ({
+type ProfileWithPatterns = Omit<CaseIntakeProfile,
+  "legalIngredients" |
+  "mandatoryQuestions" |
+  "optionalQuestions" |
+  "proceduralQuestions" |
+  "evidenceChecklist" |
+  "limitationQuestions" |
+  "jurisdictionQuestions" |
+  "reliefQuestions" |
+  "riskFlags" |
+  "documentTypeMappings"
+> & Partial<Pick<CaseIntakeProfile,
+  "legalIngredients" |
+  "mandatoryQuestions" |
+  "optionalQuestions" |
+  "proceduralQuestions" |
+  "evidenceChecklist" |
+  "limitationQuestions" |
+  "jurisdictionQuestions" |
+  "reliefQuestions" |
+  "riskFlags" |
+  "documentTypeMappings"
+>> & { patterns: RegExp[] };
+
+const q = (
+  id: string,
+  label: string,
+  placeholder: string,
+  required = true,
+  category?: CaseDetailQuestion["category"]
+): CaseDetailQuestion => ({
   id,
   label,
   placeholder,
   required,
+  category,
+  source: "profile",
 });
 
-const profiles: Array<CaseIntakeProfile & { patterns: RegExp[] }> = [
+const commonProceduralQuestions: CaseDetailQuestion[] = [
+  q("proceeding_stage", "What is the current procedural stage?", "e.g. fresh filing / pending trial / appeal / execution / pre-arrest stage", true, "procedural"),
+  q("prior_orders_history", "What prior orders, notices, FIRs, applications, appeals, or departmental steps already exist?", "e.g. FIR registered; bail dismissed on 12 June 2024; appeal pending", false, "procedural"),
+];
+
+const commonLimitationQuestions: CaseDetailQuestion[] = [
+  q("limitation_key_dates", "What are the key dates for limitation or delay?", "e.g. cause of action date, impugned order date, knowledge date, appeal deadline", true, "limitation"),
+  q("delay_explanation", "If any deadline may have passed, what is the explanation for delay?", "e.g. certified copy received late; illness; no notice served", false, "limitation"),
+];
+
+const commonJurisdictionQuestions: CaseDetailQuestion[] = [
+  q("jurisdiction_basis", "Why does this court or forum have jurisdiction?", "e.g. property is in this district; FIR registered here; authority passed order here", true, "jurisdiction"),
+  q("alternate_remedy_status", "Is any alternate remedy, appeal, review, revision, or departmental remedy available or already used?", "e.g. departmental appeal filed and dismissed", false, "jurisdiction"),
+];
+
+const commonReliefQuestions: CaseDetailQuestion[] = [
+  q("final_relief_sought", "What exact final relief should be requested?", "e.g. grant bail, set aside order, decree recovery, register FIR, restore possession", true, "relief"),
+  q("interim_relief_sought", "What urgent interim relief is needed, if any?", "e.g. stay recovery, restrain dispossession, suspend impugned order", false, "relief"),
+];
+
+const commonEvidenceChecklist = [
+  "FIR, complaint, impugned order, notice, decree, agreement, mutation, or other initiating document.",
+  "CNIC and address details of parties where needed for cause title and service.",
+  "Receipts, bank records, return memos, screenshots, photographs, medical record, revenue record, or official correspondence.",
+  "Names and availability of witnesses or officials who can verify the core facts.",
+  "Certified copies and annexures required for filing before the selected forum.",
+];
+
+const commonRiskFlags = [
+  "Missing limitation dates can make the draft procedurally unsafe.",
+  "Missing forum/court details must remain blank; the system must not assume Lahore, High Court, Sessions Court, or any city.",
+  "Unsupported legal sections should be confirmed before filing.",
+  "No citation may be inserted unless it comes from an authenticated selected judgment.",
+];
+
+const mergeQuestionLists = (...groups: CaseDetailQuestion[][]): CaseDetailQuestion[] => {
+  const seen = new Set<string>();
+  const out: CaseDetailQuestion[] = [];
+  for (const group of groups) {
+    for (const question of group) {
+      const key = question.id.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(question);
+    }
+  }
+  return out;
+};
+
+const profiles: ProfileWithPatterns[] = [
   {
     id: "ppc-489f-dishonoured-cheque",
     title: "Dishonoured Cheque",
@@ -426,9 +519,139 @@ const profiles: Array<CaseIntakeProfile & { patterns: RegExp[] }> = [
     draftingGuidance: "Use the proper High Court or revisional forum and accurately describe the underlying FIR/complaint, impugned order, and procedural history. Separate facts from grounds of illegality, impropriety, jurisdictional defect, abuse of process, or failure of justice. Explain maintainability and alternate remedy, tailor the prayer to revision or Section 561-A relief, and add interim suspension, verification, affidavit, and annexure applications where required.",
     draftingSourceNote: "Distilled from high-scoring criminal revision and quashment pleadings in a private practitioner corpus; verify current maintainability and precedent before filing.",
   },
+  {
+    id: "civil-specific-performance",
+    title: "Specific Performance of Contract",
+    law: "Specific Relief Act, 1877, Contract Act, 1872, and CPC",
+    matterType: "Suit for specific performance, alternate refund/damages, or injunction over contract/property",
+    sectionRefs: ["Specific Relief Act, 1877", "Contract Act, 1872", "CPC"],
+    searchTerms: ["specific performance", "agreement to sell", "readiness and willingness", "alternate refund"],
+    clientPosition: "petitioner",
+    patterns: [/\bspecific performance\b/i, /\bagreement to sell\b/i, /\bsale agreement dispute\b/i, /\breadiness and willingness\b/i],
+    ingredients: [
+      "A valid enforceable contract, date, consideration, parties, and subject matter are identified.",
+      "Plaintiff's readiness and willingness, payment history, notices, and defendant's breach are pleaded.",
+      "Limitation, jurisdiction, court fee, title documents, possession, and alternate relief are addressed.",
+      "Interim restraint against alienation or dispossession is framed where needed.",
+    ],
+    questions: [
+      q("contract_details", "What agreement is relied upon and when was it executed?", "e.g. agreement to sell dated 10 January 2024", true, "mandatory"),
+      q("property_or_subject", "What property, asset, or contractual subject matter is involved?", "e.g. House No. 12, Khewat No. ___, Mouza ___", true, "mandatory"),
+      q("price_payment_terms", "What total price, advance, balance, and payment schedule were agreed?", "e.g. Rs. 15,000,000; Rs. 3,000,000 paid as earnest money", true, "mandatory"),
+      q("readiness_willingness", "How can the plaintiff show readiness and willingness?", "e.g. balance amount arranged and notice sent for execution", true, "mandatory"),
+      q("breach_or_refusal", "How did the defendant refuse or breach the agreement?", "e.g. refused to execute sale deed on target date", true, "mandatory"),
+      q("notice_and_documents", "Which notice, receipts, witnesses, title papers, or bank records are available?", "e.g. agreement, receipt, legal notice, witnesses", false, "evidence"),
+      q("interim_relief_sought", "Is interim restraint needed?", "e.g. restrain defendant from alienating or creating third-party interest", false, "relief"),
+    ],
+    draftingGuidance: "Plead the agreement, consideration, payment, plaintiff's continuous readiness and willingness, breach, limitation, jurisdiction, court fee, property identity, alternate refund/damages, and interim restraint. Avoid conclusory readiness; tie it to notices, bank record, tender, or conduct.",
+    documentTypeMappings: ["specific-performance", "civil suit", "injunction-application", "legal notice"],
+  },
+  {
+    id: "criminal-fir-quashment",
+    title: "FIR Quashment / Criminal Process Abuse",
+    law: "Code of Criminal Procedure, 1898 and applicable penal law",
+    matterType: "Petition for quashment of FIR/proceedings or abuse of criminal process",
+    sectionRefs: ["Section 561-A CrPC", "Article 199 Constitution where applicable"],
+    searchTerms: ["quashment of FIR", "561-A CrPC", "abuse of process", "civil dispute criminal proceedings"],
+    clientPosition: "petitioner",
+    patterns: [/\bfir quash/i, /\bquashment\b/i, /\bquash fir\b/i, /\bfalse fir\b/i, /\babuse of process\b/i],
+    ingredients: [
+      "FIR, sections, police station, complainant, accused role, and current investigation/trial stage are identified.",
+      "The legal basis for quashment is exceptional and tied to admitted facts, mala fide, no offence made out, compromise, or civil nature.",
+      "Alternate remedies, challan status, bail status, and prejudice are explained.",
+    ],
+    questions: [
+      q("fir_complete_details", "What are the FIR number, date, police station, sections, complainant, and accused names?", "e.g. FIR No. 123/2024 under 420/406 PPC, PS City", true, "mandatory"),
+      q("allegations_summary", "What does the FIR allege against the client?", "e.g. client received money but no specific entrustment alleged", true, "mandatory"),
+      q("quashment_ground", "What is the strongest quashment ground?", "e.g. no offence made out, civil dispute, mala fide, compromise, lack of role", true, "mandatory"),
+      q("investigation_stage", "What is the investigation or trial stage?", "e.g. challan not submitted / charge framed / trial pending", true, "procedural"),
+      q("parallel_litigation", "Is there civil, family, banking, or departmental litigation on the same facts?", "e.g. recovery suit pending before civil court", false, "evidence"),
+      q("prior_orders", "What prior bail, investigation, cancellation, or lower-court orders exist?", "e.g. pre-arrest bail confirmed on 01 June 2024", false, "procedural"),
+      q("interim_relief_sought", "What interim protection is needed?", "e.g. stay arrest, stay proceedings, no coercive action", false, "relief"),
+    ],
+    draftingGuidance: "Use quashment sparingly and plead only exceptional grounds. Attach FIR, any compromise, civil pleadings, investigation orders, and prior bail/court orders. Do not ask the court to conduct a mini-trial on disputed evidence.",
+    documentTypeMappings: ["quashment-petition", "writ-petition", "criminal revision"],
+  },
+  {
+    id: "tax-appeal-fbr",
+    title: "Tax Appeal / FBR Rectification",
+    law: "Income Tax Ordinance, 2001, Sales Tax Act, 1990, and applicable fiscal statutes",
+    matterType: "Tax appeal, rectification, exemption, stay of recovery, or FBR complaint",
+    sectionRefs: ["Applicable fiscal statute", "Relevant appeal/rectification provisions"],
+    searchTerms: ["tax appeal", "FBR rectification", "assessment order", "stay of recovery"],
+    clientPosition: "appellant",
+    patterns: [/\btax appeal\b/i, /\bfbr complaint\b/i, /\brectification\b.*\bfbr\b/i, /\bassessment order\b/i, /\bstay of recovery\b/i, /\bwithholding certificate\b/i],
+    ingredients: [
+      "Taxpayer identity, NTN/STRN, tax year/period, impugned notice/order, demand, and forum are identified.",
+      "Limitation and preconditions for appeal, rectification, exemption, or stay are addressed.",
+      "Grounds separate jurisdiction, hearing, calculation, exemption, evidence, and legal interpretation.",
+    ],
+    questions: [
+      q("taxpayer_registration", "What are the taxpayer name, NTN/STRN, and tax status?", "e.g. ABC Pvt Ltd, NTN ___, filer", true, "mandatory"),
+      q("tax_period_order", "Which tax year/period and order/notice are involved?", "e.g. tax year 2023, assessment order dated 15 May 2024", true, "mandatory"),
+      q("demand_amount", "What tax, penalty, default surcharge, refund, or withholding amount is in dispute?", "e.g. demand of Rs. 8,500,000", true, "mandatory"),
+      q("tax_issue", "What is the main tax issue?", "e.g. input tax disallowed, exemption denied, wrong withholding, no hearing", true, "mandatory"),
+      q("service_limitation", "When was the order served and what is the filing deadline?", "e.g. order served on 20 May 2024; appeal due within statutory period", true, "limitation"),
+      q("record_available", "Which returns, notices, replies, ledgers, invoices, CPRs, or audit record are available?", "e.g. return, reply, bank CPRs, invoices", false, "evidence"),
+      q("recovery_status", "Is recovery action started or feared?", "e.g. bank attachment notice issued", false, "relief"),
+    ],
+    draftingGuidance: "Confirm the statute and forum before drafting. Plead service, limitation, demand, calculation, record, violation of hearing, statutory interpretation, exemption/refund basis, and stay of recovery separately.",
+    documentTypeMappings: ["tax-appeal", "fbr-complaint", "tax-exemption", "withholding-certificate"],
+  },
+  {
+    id: "constitutional-service-writ",
+    title: "Service Writ / Public Employment Challenge",
+    law: "Constitution of Pakistan, 1973, service rules, and applicable tribunal law",
+    matterType: "Constitutional/service petition against public authority, appointment, transfer, termination, seniority, or departmental action",
+    sectionRefs: ["Article 199 Constitution of Pakistan, 1973", "Applicable service rules"],
+    searchTerms: ["service writ", "departmental appeal", "natural justice service", "public employment"],
+    clientPosition: "petitioner",
+    patterns: [/\bservice writ\b/i, /\bservice matter\b/i, /\bcivil servant\b/i, /\bdepartmental appeal\b/i, /\bpublic employment\b/i, /\bseniority\b/i, /\btransfer order\b/i],
+    ingredients: [
+      "Employment status, appointing authority, governing service rules, and maintainable forum are identified.",
+      "The impugned order, inquiry, hearing, departmental appeal, and limitation are traced.",
+      "Natural justice, jurisdiction, mala fide, discrimination, proportionality, or statutory violation is tied to facts.",
+    ],
+    questions: [
+      q("employee_status_rules", "What is the employee status and which service rules apply?", "e.g. regular civil servant under Punjab Civil Servants Act/service rules", true, "mandatory"),
+      q("department_authority", "Which department/authority passed the impugned action?", "e.g. Secretary Health / District Education Authority", true, "jurisdiction"),
+      q("impugned_service_order", "What order/action is challenged and on what date?", "e.g. dismissal order dated 15 May 2024", true, "mandatory"),
+      q("inquiry_hearing", "Was notice, inquiry, hearing, or charge sheet provided?", "e.g. show-cause notice issued but no inquiry officer heard witnesses", true, "procedural"),
+      q("departmental_remedy", "What appeal, representation, or tribunal remedy was used or why unavailable?", "e.g. departmental appeal dismissed on 20 June 2024", true, "jurisdiction"),
+      q("service_relief", "What service relief is required?", "e.g. set aside dismissal, reinstatement, back benefits, seniority restoration", true, "relief"),
+      q("interim_service_relief", "Is interim relief required?", "e.g. suspend transfer or disciplinary proceedings", false, "relief"),
+    ],
+    draftingGuidance: "Do not assume High Court maintainability if a service tribunal remedy exists. Plead forum basis, rules, order, service of order, departmental remedy, limitation, natural justice, discrimination, and exact service consequences.",
+    documentTypeMappings: ["writ-petition", "fundamental-rights", "constitutional petition"],
+  },
+  {
+    id: "non-muslim-guardianship-family",
+    title: "Non-Muslim Guardianship / Minority Family Matter",
+    law: "Guardians and Wards Act, 1890 and applicable personal/minority law",
+    matterType: "Christian/Hindu/Sikh/Parsi custody, guardianship, maintenance, succession, marriage, or divorce matter",
+    sectionRefs: ["Guardians and Wards Act, 1890", "Applicable personal law"],
+    searchTerms: ["non Muslim guardianship", "minority custody", "Christian custody", "Hindu guardianship"],
+    clientPosition: "petitioner",
+    patterns: [/\bnon[-\s]?muslim\b/i, /\bchristian custody\b/i, /\bhindu guardianship\b/i, /\bminority rights\b/i, /\bforced conversion\b/i, /\bparsi\b/i, /\bsikh\b/i],
+    ingredients: [
+      "Religion/personal law status, marriage/family relationship, minor or estate details, and welfare/legal right are identified.",
+      "Forum, guardianship/custody/succession requirements, consent/objection, and documentary proof are addressed.",
+      "Sensitive minority-rights or forced-conversion allegations are pleaded with care and evidence.",
+    ],
+    questions: [
+      q("personal_law_status", "Which religion/personal law and family relationship are involved?", "e.g. Christian parents seeking custody / Hindu spouse seeking divorce", true, "mandatory"),
+      q("minor_or_family_details", "What are the minors, spouses, deceased person, or family members involved?", "e.g. minor Maryam age 7 currently with father", true, "mandatory"),
+      q("welfare_or_right_ground", "What welfare, personal-law, minority-right, or protection ground supports the case?", "e.g. schooling, safety, denial of access, forced conversion concern", true, "mandatory"),
+      q("documents_available", "Which marriage, birth, baptism, school, CNIC, succession, or community documents exist?", "e.g. birth certificate, school record, marriage certificate", false, "evidence"),
+      q("current_custody_or_status", "What is the current custody, possession, marital, or estate status?", "e.g. minor with respondent since 01 May 2024", true, "procedural"),
+      q("relief_sought", "What exact court protection or family relief is required?", "e.g. appoint guardian, custody, visitation, protection order, succession certificate", true, "relief"),
+    ],
+    draftingGuidance: "Identify the personal-law context, but anchor guardianship and custody relief in welfare of the minor. For minority protection or forced-conversion matters, avoid inflammatory claims unsupported by evidence and seek precise protective directions.",
+    documentTypeMappings: ["guardianship", "christian-custody", "hindu-divorce", "minority-rights-petition", "forced-conversion"],
+  },
 ];
 
-const fallbackProfiles: Array<CaseIntakeProfile & { patterns: RegExp[] }> = [
+const fallbackProfiles: ProfileWithPatterns[] = [
   {
     id: "service-labour-general",
     title: "Service / Employment / Labour Matter",
@@ -742,13 +965,18 @@ function profileMatches(profile: { patterns: RegExp[] }, text: string): boolean 
   return profile.patterns.some((pattern) => pattern.test(text));
 }
 
-function profileMatchScore(profile: CaseIntakeProfile & { patterns: RegExp[] }, text: string): number {
+function profileMatchScore(profile: ProfileWithPatterns, text: string): number {
   const priority: Record<string, number> = {
     "crpc-22a-22b-justice-of-peace": 100,
     "cpc-civil-revision-115": 95,
     "cpc-order-vii-rule-11": 95,
     "rent-appeal-punjab": 95,
     "crpc-criminal-revision-561a": 95,
+    "criminal-fir-quashment": 98,
+    "civil-specific-performance": 96,
+    "tax-appeal-fbr": 95,
+    "constitutional-service-writ": 96,
+    "non-muslim-guardianship-family": 94,
   };
   const patternHits = profile.patterns.filter((pattern) => pattern.test(text)).length;
   return (priority[profile.id] || 0) + patternHits;
@@ -770,7 +998,35 @@ export function findCaseIntakeProfile(input: {
   return fallback ? withoutPatterns(fallback) : null;
 }
 
-function withoutPatterns(profile: CaseIntakeProfile & { patterns: RegExp[] }): CaseIntakeProfile {
+function normalizeProfile(profile: ProfileWithPatterns): CaseIntakeProfile {
+  const mandatoryQuestions = profile.mandatoryQuestions?.length
+    ? profile.mandatoryQuestions
+    : profile.questions.filter((question) => question.required);
+  const optionalQuestions = profile.optionalQuestions?.length
+    ? profile.optionalQuestions
+    : profile.questions.filter((question) => !question.required);
+  const proceduralQuestions = profile.proceduralQuestions?.length
+    ? profile.proceduralQuestions
+    : commonProceduralQuestions;
+  const limitationQuestions = profile.limitationQuestions?.length
+    ? profile.limitationQuestions
+    : commonLimitationQuestions;
+  const jurisdictionQuestions = profile.jurisdictionQuestions?.length
+    ? profile.jurisdictionQuestions
+    : commonJurisdictionQuestions;
+  const reliefQuestions = profile.reliefQuestions?.length
+    ? profile.reliefQuestions
+    : commonReliefQuestions;
+
+  const normalizedQuestions = mergeQuestionLists(
+    mandatoryQuestions.map((question) => ({ ...question, category: question.category || "mandatory" })),
+    proceduralQuestions.map((question) => ({ ...question, category: question.category || "procedural" })),
+    limitationQuestions.map((question) => ({ ...question, category: question.category || "limitation" })),
+    jurisdictionQuestions.map((question) => ({ ...question, category: question.category || "jurisdiction" })),
+    reliefQuestions.map((question) => ({ ...question, category: question.category || "relief" })),
+    optionalQuestions.map((question) => ({ ...question, category: question.category || "optional" }))
+  );
+
   return {
     id: profile.id,
     title: profile.title,
@@ -778,12 +1034,40 @@ function withoutPatterns(profile: CaseIntakeProfile & { patterns: RegExp[] }): C
     matterType: profile.matterType,
     sectionRefs: profile.sectionRefs,
     ingredients: profile.ingredients,
-    questions: profile.questions,
+    legalIngredients: profile.legalIngredients?.length ? profile.legalIngredients : profile.ingredients,
+    questions: normalizedQuestions,
+    mandatoryQuestions,
+    optionalQuestions,
+    proceduralQuestions,
+    evidenceChecklist: profile.evidenceChecklist?.length ? profile.evidenceChecklist : commonEvidenceChecklist,
+    limitationQuestions,
+    jurisdictionQuestions,
+    reliefQuestions,
+    riskFlags: profile.riskFlags?.length ? profile.riskFlags : commonRiskFlags,
+    documentTypeMappings: profile.documentTypeMappings?.length
+      ? profile.documentTypeMappings
+      : [
+          profile.title,
+          profile.matterType,
+          ...profile.searchTerms,
+          ...profile.sectionRefs,
+        ].map((item) => item.toLowerCase()),
     searchTerms: profile.searchTerms,
     clientPosition: profile.clientPosition,
     draftingGuidance: profile.draftingGuidance,
     draftingSourceNote: profile.draftingSourceNote,
   };
+}
+
+function withoutPatterns(profile: ProfileWithPatterns): CaseIntakeProfile {
+  const normalized = normalizeProfile(profile);
+  return {
+    ...normalized,
+  };
+}
+
+export function getCaseIntakeProfiles(): CaseIntakeProfile[] {
+  return [...profiles, ...fallbackProfiles].map(normalizeProfile);
 }
 
 export function buildKnowledgeInterpretation(profile: CaseIntakeProfile): string {
@@ -811,7 +1095,11 @@ Matter: ${profile.title}
 Applicable law: ${profile.law}
 Relevant provision(s): ${profile.sectionRefs.join(", ")}
 Essential ingredients:
-${profile.ingredients.map((item) => `- ${item}`).join("\n")}
+${profile.legalIngredients.map((item) => `- ${item}`).join("\n")}
+Evidence checklist:
+${profile.evidenceChecklist.map((item) => `- ${item}`).join("\n")}
+Risk flags:
+${profile.riskFlags.map((item) => `- ${item}`).join("\n")}
 Drafting guidance:
 ${profile.draftingGuidance}
 ${profile.draftingSourceNote ? `Source note: ${profile.draftingSourceNote}` : ""}`;

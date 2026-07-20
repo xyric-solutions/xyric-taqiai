@@ -229,7 +229,7 @@ export default function AffidavitTypePage() {
         </Card>
       ) : mode === "form" ? (
         <Card className="p-4 sm:p-6">
-          <DynamicForm fields={template.formFields} onSubmit={handleSubmit} loading={loading} language={language} />
+          <DynamicForm fields={template.formFields} onSubmit={handleSubmit} loading={loading} language={language} documentType={template.name} />
         </Card>
       ) : (
         <Card className="p-4 sm:p-6">

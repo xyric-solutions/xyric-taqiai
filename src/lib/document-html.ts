@@ -8,6 +8,17 @@ export function textFromHtml(html: string): string {
     .trim();
 }
 
+export function compactPaginationWhitespace(html: string, maxConsecutiveBlankLines = 2): string {
+  const normalizedLimit = Math.max(0, Math.min(4, Math.floor(maxConsecutiveBlankLines)));
+  const blankBlockPattern = /(?:<p><br\s*\/?><\/p>\s*){3,}/gi;
+  const replacement = "<p><br/></p>".repeat(normalizedLimit);
+  return html.replace(blankBlockPattern, replacement);
+}
+
+export function isMeaningfulPaginationPage(html: string): boolean {
+  return Boolean(textFromHtml(html)) || /<(?:table|img|hr)\b/i.test(html);
+}
+
 interface NormalizeHtmlOptions {
   preserveInlineStyles?: boolean;
   preserveEmptyBlocks?: boolean;
@@ -121,6 +132,16 @@ function sanitizeHtmlAttributes(
       ) {
         const numericValue = Math.max(1, Math.min(20, Number(value)));
         attributes.push(`${name}="${numericValue}"`);
+      }
+
+      if (tagName === "table" && name === "border" && /^(?:0|1)$/.test(value)) {
+        attributes.push(`border="${value}"`);
+        return "";
+      }
+
+      if (tagName === "div" && name === "data-document-format" && value === "vakalatnama") {
+        attributes.push('data-document-format="vakalatnama"');
+        return "";
       }
 
       return "";

@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
-import { buildKnowledgeInterpretation, findCaseIntakeProfile } from "@/lib/case-builder-knowledge";
+import { buildKnowledgeInterpretation, findCaseIntakeProfile, type CaseDetailQuestion, type CaseIntakeProfile } from "@/lib/case-builder-knowledge";
+import { getAllTemplates } from "@/templates";
+import type { FormField, TemplateDefinition } from "@/templates/types";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -61,6 +63,176 @@ function parseJson<T>(raw: string): T | null {
   }
 }
 
+function toSnakeCase(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+const GENERIC_TEMPLATE_TERMS = new Set([
+  "application",
+  "petition",
+  "complaint",
+  "case",
+  "matter",
+  "document",
+  "legal",
+  "criminal",
+  "civil",
+  "family",
+  "law",
+  "under",
+  "section",
+  "sections",
+  "act",
+  "ppc",
+  "crpc",
+  "cpc",
+]);
+
+function searchTokens(value: string): string[] {
+  return normalizeText(value)
+    .split(" ")
+    .filter((word) => word.length >= 2)
+    .filter((word) => /^\d/.test(word) || !GENERIC_TEMPLATE_TERMS.has(word));
+}
+
+function templateScore(template: TemplateDefinition, query: string, profile?: CaseIntakeProfile | null): number {
+  const normalizedQuery = normalizeText(query);
+  const profileQuery = profile
+    ? [
+        profile.title,
+        profile.matterType,
+        ...profile.sectionRefs,
+        ...profile.searchTerms,
+        ...profile.documentTypeMappings,
+      ].join(" ")
+    : "";
+  if (!normalizedQuery && !profileQuery) return 0;
+  const candidates = [
+    template.name,
+    template.nameUrdu,
+    template.description,
+    template.category,
+    template.subType,
+  ].map(normalizeText);
+  const candidateText = candidates.join(" ");
+  const candidateTokens = new Set(searchTokens(candidateText));
+  let score = 0;
+
+  for (const candidate of candidates) {
+    if (!candidate || !normalizedQuery) continue;
+    if (candidate === normalizedQuery) score += 100;
+    else if (candidate.includes(normalizedQuery) || normalizedQuery.includes(candidate)) score += 45;
+  }
+
+  for (const token of searchTokens(query)) {
+    if (candidateTokens.has(token)) score += /^\d/.test(token) ? 22 : 10;
+    else if (candidateText.includes(token)) score += /^\d/.test(token) ? 14 : 5;
+  }
+
+  if (profile) {
+    const profilePhrases = [
+      profile.title,
+      profile.matterType,
+      ...profile.sectionRefs,
+      ...profile.searchTerms,
+      ...profile.documentTypeMappings,
+    ].map(normalizeText).filter(Boolean);
+
+    const normalizedSubType = normalizeText(template.subType);
+    const normalizedName = normalizeText(template.name);
+    if (profile.documentTypeMappings.some((mapping) => {
+      const normalizedMapping = normalizeText(mapping);
+      return normalizedMapping === normalizedSubType ||
+        normalizedName.includes(normalizedMapping) ||
+        normalizedMapping.includes(normalizedSubType);
+    })) {
+      score += 80;
+    }
+
+    for (const phrase of profilePhrases) {
+      if (phrase.length >= 3 && candidateText.includes(phrase)) score += /^\d/.test(phrase) ? 45 : 35;
+    }
+
+    for (const token of searchTokens(profileQuery)) {
+      if (candidateTokens.has(token)) score += /^\d/.test(token) ? 30 : 16;
+      else if (candidateText.includes(token)) score += /^\d/.test(token) ? 20 : 8;
+    }
+  }
+
+  return score;
+}
+
+function findMatchingTemplate(documentNeeded?: string, sections?: string, profile?: CaseIntakeProfile | null): TemplateDefinition | null {
+  const query = [documentNeeded, sections].filter(Boolean).join(" ");
+  const minimumScore = profile ? 45 : 32;
+  const ranked = getAllTemplates()
+    .map((template) => ({ template, score: templateScore(template, query, profile) }))
+    .filter((item) => item.score >= minimumScore)
+    .sort((first, second) => second.score - first.score);
+  return ranked[0]?.template || null;
+}
+
+function isGenericIdentityField(field: FormField): boolean {
+  const text = `${field.name} ${field.label}`.toLowerCase();
+  return /\b(name|father|cnic|address|court|district|city|applicant|petitioner|plaintiff|respondent|defendant|accused|opponent|client)\b/.test(text);
+}
+
+function templateFieldToQuestion(field: FormField, isUrdu: boolean): CaseDetailQuestion {
+  return {
+    id: `template_${toSnakeCase(field.name)}`,
+    label: isUrdu ? field.labelUrdu || field.label : field.label,
+    placeholder: isUrdu ? field.placeholderUrdu || field.placeholder || "" : field.placeholder || "",
+    required: field.required,
+    category: "template",
+    source: "template",
+  };
+}
+
+function buildTemplateQuestions(documentNeeded: string | undefined, sections: string | undefined, isUrdu: boolean, profile?: CaseIntakeProfile | null): {
+  template: Pick<TemplateDefinition, "category" | "subType" | "name"> | null;
+  questions: CaseDetailQuestion[];
+} {
+  const template = findMatchingTemplate(documentNeeded, sections, profile);
+  if (!template) return { template: null, questions: [] };
+
+  return {
+    template: {
+      category: template.category,
+      subType: template.subType,
+      name: template.name,
+    },
+    questions: template.formFields
+      .filter((field) => field.required && !isGenericIdentityField(field))
+      .map((field) => templateFieldToQuestion(field, isUrdu))
+      .slice(0, 10),
+  };
+}
+
+function profilePayload(profile: CaseIntakeProfile, template: ReturnType<typeof buildTemplateQuestions>["template"]) {
+  return {
+    id: profile.id,
+    title: profile.title,
+    law: profile.law,
+    matterType: profile.matterType,
+    sectionRefs: profile.sectionRefs,
+    ingredients: profile.ingredients,
+    legalIngredients: profile.legalIngredients,
+    evidenceChecklist: profile.evidenceChecklist,
+    riskFlags: profile.riskFlags,
+    draftingGuidance: profile.draftingGuidance,
+    documentTypeMappings: profile.documentTypeMappings,
+    template,
+  };
+}
+
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -86,6 +258,7 @@ export async function POST(request: NextRequest) {
   const isUrdu = language === "ur";
   const labelLang = isUrdu ? "Urdu script" : "English";
   const knowledgeProfile = findCaseIntakeProfile({ sections, documentNeeded, purpose, facts });
+  const templateMatch = buildTemplateQuestions(documentNeeded, sections, isUrdu, knowledgeProfile);
 
   if (!sections?.trim()) {
     return NextResponse.json({ error: "Law section(s) or case type is required." }, { status: 400 });
@@ -97,13 +270,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         interpretation: buildKnowledgeInterpretation(knowledgeProfile),
         alternatives: [],
-        profile: {
-          id: knowledgeProfile.id,
-          title: knowledgeProfile.title,
-          law: knowledgeProfile.law,
-          sectionRefs: knowledgeProfile.sectionRefs,
-          ingredients: knowledgeProfile.ingredients,
-        },
+        profile: profilePayload(knowledgeProfile, templateMatch.template),
       });
     }
 
@@ -145,14 +312,8 @@ Return ONLY valid JSON (no markdown, no explanation):
     if (knowledgeProfile) {
       return NextResponse.json({
         questions: knowledgeProfile.questions,
-        profile: {
-          id: knowledgeProfile.id,
-          title: knowledgeProfile.title,
-          law: knowledgeProfile.law,
-          sectionRefs: knowledgeProfile.sectionRefs,
-          ingredients: knowledgeProfile.ingredients,
-          draftingGuidance: knowledgeProfile.draftingGuidance,
-        },
+        profile: profilePayload(knowledgeProfile, templateMatch.template),
+        templateQuestions: [],
       });
     }
 
@@ -171,9 +332,11 @@ Examples of the level of detail wanted:
 - Bail → offence & sections, FIR number + police station, date of arrest, custody status, role assigned to the accused.
 - Maintenance/khula → date of marriage, haq mehr, number & ages of children, amount demanded, date of desertion.
 
+The examples above illustrate specificity only. Never copy a field from an example unless it belongs to the exact confirmed matter and intended document.
+
 STRICT RULES:
 1. Ask ONLY the case-specific facts for this matter. DO NOT ask for generic party identity that the form already collects: client/opponent name, father name, CNIC, address, court name, district/city. Skip those entirely.
-2. Return between 4 and 10 questions. If fewer genuinely apply, return fewer.
+2. Return between 6 and 14 questions. If fewer genuinely apply, return fewer.
 3. Field "id" must be snake_case English (e.g. "vehicle_registration_no", "date_of_theft").
 4. Write each "label" in ${labelLang}.
 5. Placeholders must be realistic Pakistani examples written in ${isUrdu ? "Urdu script" : "English"}.
@@ -185,14 +348,14 @@ STRICT RULES:
 Return ONLY valid JSON (no markdown, no explanation):
 {
   "questions": [
-    { "id": "field_id", "label": "question in ${labelLang}", "placeholder": "realistic example", "required": true }
+    { "id": "field_id", "label": "question in ${labelLang}", "placeholder": "realistic example", "required": true, "category": "mandatory" }
   ]
 }`;
 
     try {
       const raw = await withTimeout(tryGenerate(questionsPrompt), GEMINI_TIMEOUT_MS);
       const parsed = parseJson<{
-        questions?: { id?: string; label?: string; placeholder?: string; required?: boolean }[];
+        questions?: { id?: string; label?: string; placeholder?: string; required?: boolean; category?: string }[];
       }>(raw);
       const questions = Array.isArray(parsed?.questions)
         ? parsed!.questions
@@ -202,12 +365,16 @@ Return ONLY valid JSON (no markdown, no explanation):
               label: String(q.label),
               placeholder: String(q.placeholder || ""),
               required: Boolean(q.required),
+              category: ["mandatory", "procedural", "evidence", "limitation", "jurisdiction", "relief", "optional"].includes(String(q.category || ""))
+                ? q.category as CaseDetailQuestion["category"]
+                : (q.required ? "mandatory" : "optional"),
+              source: "ai" as const,
             }))
-            .slice(0, 10)
+            .slice(0, 14)
         : [];
-      return NextResponse.json({ questions });
+      return NextResponse.json({ questions, templateQuestions: [] });
     } catch {
-      return NextResponse.json({ questions: [] });
+      return NextResponse.json({ questions: templateMatch.questions, templateQuestions: templateMatch.questions });
     }
   }
 

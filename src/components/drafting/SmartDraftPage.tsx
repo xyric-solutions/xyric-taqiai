@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { saveDocument, updateDocumentContent } from "@/lib/document-store";
 import DocumentPreview from "@/components/documents/DocumentPreview";
 import Card from "@/components/ui/Card";
@@ -10,9 +10,12 @@ import AutoGrowTextarea from "@/components/ui/AutoGrowTextarea";
 import {
   Sparkles, ArrowLeft, ArrowRight, Paperclip, X,
   Image as ImageIcon, FileText as FileIcon, RefreshCw, Send,
-  Mic, MicOff, Camera,
+  Mic, MicOff, Camera, FileCheck2, AlertTriangle, ListChecks,
+  Search, Files, ChevronRight,
 } from "lucide-react";
 import { DOCUMENT_SUGGESTIONS, getDocSuggestions } from "@/lib/document-suggestions";
+import type { AgreementCatalogGroup, AgreementCatalogItem } from "@/lib/agreement-catalog";
+import { getDocumentFieldExample } from "@/lib/document-field-examples";
 
 type Stage = "input" | "asking" | "confirm" | "generating" | "done";
 
@@ -21,6 +24,23 @@ interface Question {
   label: string;
   placeholder: string;
   required: boolean;
+  category?: string;
+  source?: string;
+}
+
+interface DocumentClassificationSummary {
+  id: string;
+  title: string;
+  family: string;
+  category: string;
+  template?: {
+    category: string;
+    subType: string;
+    name: string;
+  } | null;
+  formatChecklist?: string[];
+  riskFlags?: string[];
+  draftingGuidance?: string;
 }
 
 // Voice ("Speak") is only useful for long, narrative fields (facts, grounds,
@@ -41,6 +61,13 @@ function isVoiceField(q: { id: string; label: string }): boolean {
   return VOICE_FIELD_HINTS.some((h) => hay.includes(h));
 }
 
+function isCustomAgreementAiPrompt(q: { id: string; label: string }): boolean {
+  const hay = `${q.id} ${q.label}`.toLowerCase();
+  return q.id.toLowerCase() === "description"
+    && hay.includes("tell ai")
+    && hay.includes("agreement");
+}
+
 interface AttachedFile {
   id: string;
   name: string;
@@ -49,7 +76,7 @@ interface AttachedFile {
   preview?: string;
 }
 
-const DRAFT_STORAGE_VERSION = 1;
+const DRAFT_STORAGE_VERSION = 2;
 const DRAFT_STORAGE_PREFIX = "taqi-ai-smart-draft";
 
 interface PersistedSmartDraft {
@@ -62,6 +89,7 @@ interface PersistedSmartDraft {
   language: string;
   documentType: string;
   documentTypeUrdu: string;
+  classification: DocumentClassificationSummary | null;
   questions: Question[];
   answers: Record<string, string>;
   sectionWarning: string | null;
@@ -85,10 +113,175 @@ function hasPersistableDraft(draft: PersistedSmartDraft): boolean {
     draft.userRequest.trim() ||
     draft.extraInstructions.trim() ||
     draft.generatedHtml.trim() ||
+    draft.classification ||
     draft.moreInstruction.trim() ||
     draft.extractedContext.trim() ||
     draft.questions.length > 0 ||
     Object.values(draft.answers).some((value) => value.trim())
+  );
+}
+
+function StructuredIntakePanel({
+  classification,
+  questions,
+  answers,
+}: {
+  classification: DocumentClassificationSummary | null;
+  questions: Question[];
+  answers: Record<string, string>;
+}) {
+  if (!classification) return null;
+
+  const answered = questions.filter((question) => answers[question.id]?.trim()).length;
+  const total = questions.length;
+  const checklist = (classification.formatChecklist || []).slice(0, 3);
+  const risks = (classification.riskFlags || []).slice(0, 3);
+
+  return (
+    <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-1)] p-4 space-y-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)] flex items-center gap-1.5">
+            <FileCheck2 className="h-3.5 w-3.5 text-primary-500" />
+            Structured Intake
+          </p>
+          <h2 className="mt-1 text-base font-semibold text-[var(--text-primary)] truncate">
+            {classification.title}
+          </h2>
+          <p className="text-xs text-[var(--text-tertiary)]">{classification.family}</p>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="text-lg font-bold text-primary-400">{answered}/{total || 0}</p>
+          <p className="text-[11px] text-[var(--text-tertiary)]">answered</p>
+        </div>
+      </div>
+
+      {classification.template && (
+        <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface-2)] px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">Template Matched</p>
+          <p className="text-sm text-[var(--text-secondary)] truncate">{classification.template.name}</p>
+        </div>
+      )}
+
+      <div className="grid gap-3 md:grid-cols-2">
+        {checklist.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-semibold text-[var(--text-secondary)] flex items-center gap-1.5">
+              <ListChecks className="h-3.5 w-3.5 text-emerald-400" />
+              Core Structure
+            </p>
+            {checklist.map((item) => (
+              <p key={item} className="text-xs leading-relaxed text-[var(--text-tertiary)]">- {item}</p>
+            ))}
+          </div>
+        )}
+        {risks.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-semibold text-[var(--text-secondary)] flex items-center gap-1.5">
+              <AlertTriangle className="h-3.5 w-3.5 text-warning-500" />
+              Risk Checks
+            </p>
+            {risks.map((item) => (
+              <p key={item} className="text-xs leading-relaxed text-[var(--text-tertiary)]">- {item}</p>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DocumentCatalogPanel({
+  groups,
+  language,
+  onSelect,
+}: {
+  groups: AgreementCatalogGroup[];
+  language: string;
+  onSelect: (item: AgreementCatalogItem) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [groupId, setGroupId] = useState("all");
+  const total = groups.reduce((count, group) => count + group.items.length, 0);
+  const visibleItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    const pool = groupId === "all" ? groups : groups.filter((group) => group.id === groupId);
+
+    return pool.flatMap((group) =>
+      group.items
+        .filter((item) => {
+          if (!normalizedQuery) return true;
+          return [item.label, item.labelUrdu, item.request, item.subType, ...item.keywords]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedQuery);
+        })
+        .map((item) => ({ item, group }))
+    );
+  }, [groupId, groups, query]);
+
+  return (
+    <div className="lg:pt-1 min-w-0">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider flex items-center gap-1.5">
+          <Files className="h-3.5 w-3.5 text-primary-500" /> Agreement library
+        </p>
+        <span className="text-[11px] tabular-nums text-[var(--text-tertiary)]">{total} types</span>
+      </div>
+
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(120px,0.72fr)] gap-2 mb-3">
+        <label className="relative min-w-0">
+          <span className="sr-only">Search agreement types</span>
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-tertiary)]" />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search"
+            className="h-9 w-full rounded-md border border-[var(--border-default)] bg-[var(--bg-surface-2)] pl-8 pr-2.5 text-xs text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-tertiary)] focus:border-primary-500"
+          />
+        </label>
+        <label className="min-w-0">
+          <span className="sr-only">Agreement category</span>
+          <select
+            value={groupId}
+            onChange={(event) => setGroupId(event.target.value)}
+            className="h-9 w-full rounded-md border border-[var(--border-default)] bg-[var(--bg-surface-2)] px-2.5 text-xs text-[var(--text-secondary)] outline-none transition-colors focus:border-primary-500"
+          >
+            <option value="all">All categories</option>
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>{group.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="max-h-[430px] overflow-y-auto rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface-2)]">
+        {visibleItems.length > 0 ? visibleItems.map(({ item, group }, index) => (
+          <button
+            key={item.subType}
+            type="button"
+            onClick={() => onSelect(item)}
+            className={`group flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-primary-500/5 focus-visible:bg-primary-500/5 focus-visible:outline-none ${index > 0 ? "border-t border-[var(--border-subtle)]" : ""}`}
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-medium leading-5 text-[var(--text-secondary)] group-hover:text-primary-300">
+                {language === "ur" ? item.labelUrdu : item.label}
+              </p>
+              <p className="truncate text-[10px] leading-4 text-[var(--text-tertiary)]">
+                {language === "ur" ? item.label : group.label}
+              </p>
+            </div>
+            <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-tertiary)] group-hover:text-primary-400" />
+          </button>
+        )) : (
+          <div className="px-4 py-8 text-center">
+            <p className="text-sm text-[var(--text-secondary)]">No agreement type found</p>
+            <p className="mt-1 text-xs text-[var(--text-tertiary)]">Choose Custom / Other Agreement for a special document.</p>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -99,6 +292,8 @@ interface SmartDraftPageProps {
   category: string;
   quickExamples: string[];
   placeholder: string;
+  documentGroups?: AgreementCatalogGroup[];
+  restoreDraft?: boolean;
 }
 
 function getFriendlyGenerationError(error: unknown): string {
@@ -137,6 +332,8 @@ export default function SmartDraftPage({
   category,
   quickExamples,
   placeholder,
+  documentGroups = [],
+  restoreDraft = true,
 }: SmartDraftPageProps) {
   const [stage, setStage] = useState<Stage>("input");
   const [userRequest, setUserRequest] = useState("");
@@ -159,6 +356,7 @@ export default function SmartDraftPage({
   // asking stage
   const [documentType, setDocumentType] = useState("");
   const [documentTypeUrdu, setDocumentTypeUrdu] = useState("");
+  const [classification, setClassification] = useState<DocumentClassificationSummary | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [sectionWarning, setSectionWarning] = useState<string | null>(null);
@@ -249,6 +447,12 @@ export default function SmartDraftPage({
   useEffect(() => {
     if (!draftStorageKey || draftHydrated) return;
 
+    if (!restoreDraft) {
+      localStorage.removeItem(draftStorageKey);
+      setDraftHydrated(true);
+      return;
+    }
+
     let restored = false;
     try {
       const raw = localStorage.getItem(draftStorageKey);
@@ -265,7 +469,20 @@ export default function SmartDraftPage({
           setLanguage(draft.language || "en");
           setDocumentType(draft.documentType || "");
           setDocumentTypeUrdu(draft.documentTypeUrdu || "");
-          setQuestions(Array.isArray(draft.questions) ? draft.questions : []);
+          setClassification(draft.classification || null);
+          const restoredDocumentType = draft.documentType || draft.classification?.template?.name || draft.classification?.title || title;
+          setQuestions(Array.isArray(draft.questions)
+            ? draft.questions.map((question) => ({
+                ...question,
+                placeholder: getDocumentFieldExample({
+                  id: question.id,
+                  label: question.label,
+                  documentType: restoredDocumentType,
+                  language: draft.language || "en",
+                  providedExample: question.placeholder,
+                }),
+              }))
+            : []);
           setAnswers(draft.answers || {});
           setSectionWarning(draft.sectionWarning || null);
           setSectionWarningDismissed(Boolean(draft.sectionWarningDismissed));
@@ -280,6 +497,8 @@ export default function SmartDraftPage({
           setLoading(false);
           setError(null);
           restored = true;
+        } else {
+          localStorage.removeItem(draftStorageKey);
         }
       }
     } catch {
@@ -295,7 +514,7 @@ export default function SmartDraftPage({
     }
 
     setDraftHydrated(true);
-  }, [category, draftHydrated, draftStorageKey]);
+  }, [category, draftHydrated, draftStorageKey, restoreDraft, title]);
 
   const buildDraftSnapshot = useCallback((): PersistedSmartDraft => ({
     version: DRAFT_STORAGE_VERSION,
@@ -307,6 +526,7 @@ export default function SmartDraftPage({
     language,
     documentType,
     documentTypeUrdu,
+    classification,
     questions,
     answers,
     sectionWarning,
@@ -320,6 +540,7 @@ export default function SmartDraftPage({
   }), [
     answers,
     blankCount,
+    classification,
     category,
     documentType,
     documentTypeUrdu,
@@ -463,7 +684,16 @@ export default function SmartDraftPage({
     // Real typing always re-enables suggestions
     justSelectedRef.current = false;
     setUserRequest(val);
-  }, []);
+    if (stage === "input") {
+      setDocumentType("");
+      setDocumentTypeUrdu("");
+      setClassification(null);
+      setQuestions([]);
+      setAnswers({});
+      setSectionWarning(null);
+      setSectionWarningDismissed(false);
+    }
+  }, [stage]);
 
   const selectSuggestion = (doc: typeof DOCUMENT_SUGGESTIONS[0]) => {
     justSelectedRef.current = true;
@@ -472,9 +702,28 @@ export default function SmartDraftPage({
     setSuggestions([]);
     setShowSuggestions(false);
     setSuggestionIdx(-1);
+    setDocumentType("");
+    setDocumentTypeUrdu("");
+    setClassification(null);
+    setQuestions([]);
+    setAnswers({});
   };
 
-  const reset = () => {
+  const selectCatalogItem = (item: AgreementCatalogItem) => {
+    justSelectedRef.current = true;
+    setUserRequest(item.request);
+    setDebouncedRequest(item.request);
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setSuggestionIdx(-1);
+    setDocumentType("");
+    setDocumentTypeUrdu("");
+    setClassification(null);
+    setQuestions([]);
+    setAnswers({});
+  };
+
+  const reset = useCallback(() => {
     if (draftStorageKey) {
       localStorage.removeItem(draftStorageKey);
     }
@@ -491,6 +740,7 @@ export default function SmartDraftPage({
     setDraftTitle("");
     setDocumentType("");
     setDocumentTypeUrdu("");
+    setClassification(null);
     setAnswers({});
     setQuestions([]);
     setError(null);
@@ -503,8 +753,16 @@ export default function SmartDraftPage({
     setSectionWarning(null);
     setSectionWarningDismissed(false);
     setBlankCount(0);
-    stopVoice();
-  };
+    recognitionRef.current?.stop();
+    setVoiceTarget(null);
+  }, [draftStorageKey]);
+
+  useEffect(() => {
+    if (documentGroups.length === 0) return;
+    const showAgreementLibrary = () => reset();
+    window.addEventListener("taqi:show-agreement-library", showAgreementLibrary);
+    return () => window.removeEventListener("taqi:show-agreement-library", showAgreementLibrary);
+  }, [documentGroups.length, reset]);
 
   // ── Same Typing handler: extract text from image → generate clean typed document ──
   const handleSameTyping = async () => {
@@ -535,6 +793,7 @@ export default function SmartDraftPage({
           userRequest: `Retype this document in clean professional typed format in English. Reproduce the SAME document exactly — same content, same structure, same names, numbers and legal text — but formatted as a proper typed legal document with correct HTML. Do not add, remove, or change any content. Document text extracted from image:\n\n${extractedText}`,
           answers: {},
           language: "en",
+          category,
         }),
       });
       const genData = await genRes.json();
@@ -615,16 +874,24 @@ export default function SmartDraftPage({
       const res = await fetch("/api/ai/smart-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "analyze", userRequest: fullRequest, language }),
+        body: JSON.stringify({
+          action: "analyze",
+          userRequest: fullRequest,
+          documentRequest: userRequest,
+          language,
+          category,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
       if (data.action === "generated") {
+        setClassification(data.classification || null);
         setBlankCount(data.blankCount || 0);
         await saveAndShowDocument(data.html, data.documentType || userRequest.slice(0, 60));
       } else if (data.action === "ask") {
         setDocumentType(data.documentType || "");
         setDocumentTypeUrdu(data.documentTypeUrdu || "");
+        setClassification(data.classification || null);
         setQuestions(data.questions || []);
         if (data.extractedInfo) setAnswers(data.extractedInfo);
         if (data.sectionWarning) { setSectionWarning(data.sectionWarning); setSectionWarningDismissed(false); }
@@ -652,10 +919,18 @@ export default function SmartDraftPage({
       const res = await fetch("/api/ai/smart-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "generate", userRequest: fullRequest, answers, language }),
+        body: JSON.stringify({
+          action: "generate",
+          userRequest: fullRequest,
+          documentRequest: userRequest,
+          answers,
+          language,
+          category,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Generation failed");
+      setClassification(data.classification || classification);
       setBlankCount(data.blankCount || 0);
       await saveAndShowDocument(data.html, documentType || userRequest.slice(0, 60));
     } catch (err) {
@@ -789,7 +1064,9 @@ export default function SmartDraftPage({
         </div>
 
         {/* Voice status bar — only for categories that support voice */}
-        {showMediaFeatures && voiceTarget && voiceTarget !== "request" && (
+        <StructuredIntakePanel classification={classification} questions={questions} answers={answers} />
+
+        {voiceTarget && voiceTarget !== "request" && (
           <div className="flex items-center gap-2 px-4 py-2.5 bg-red-50 border border-red-200 rounded-xl">
             <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
             <span className="text-sm text-red-700 font-medium">
@@ -802,7 +1079,7 @@ export default function SmartDraftPage({
         <Card className="p-6 space-y-5">
           <div className="flex items-start gap-3 bg-primary-50 rounded-xl p-3.5">
             <Sparkles className="h-4 w-4 text-primary-600 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-primary-700 font-medium">A little more information is needed — please fill in these fields:</p>
+            <p className="text-sm text-primary-700 font-medium">Answer what you know. Empty fields are allowed and will stay blank in the draft.</p>
           </div>
 
           {/* Section Warning */}
@@ -823,23 +1100,31 @@ export default function SmartDraftPage({
 
           {questions.map((q) => {
             const isDetail = isVoiceField(q);
+            const hasVoiceInput = isDetail && (showMediaFeatures || isCustomAgreementAiPrompt(q));
+            const questionExample = getDocumentFieldExample({
+              id: q.id,
+              label: q.label,
+              documentType: documentType || classification?.template?.name || classification?.title || title,
+              language,
+              providedExample: q.placeholder,
+            });
             const inputCls = `w-full px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm transition-colors ${
-              showMediaFeatures && voiceTarget === q.id ? "border-danger-500/50 bg-danger-500/10" : "border-[var(--border-default)] bg-[var(--bg-surface-2)]"
+              hasVoiceInput && voiceTarget === q.id ? "border-danger-500/50 bg-danger-500/10" : "border-[var(--border-default)] bg-[var(--bg-surface-2)]"
             }`;
             const filled = !!answers[q.id]?.trim();
             return (
               <div key={q.id} className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <label className="text-sm font-medium text-[var(--text-secondary)]">
-                    {q.label}{q.required && <span className="text-red-400 ml-1">*</span>}
+                    {q.label}{q.required && <span className="ml-2 rounded-md bg-[var(--bg-surface-2)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-tertiary)]">important</span>}
                   </label>
-                  {showMediaFeatures && isDetail && <MicBtn targetId={q.id} small />}
+                  {hasVoiceInput && <MicBtn targetId={q.id} small />}
                 </div>
 
                 {isDetail ? (
                   <AutoGrowTextarea
                     minRows={4}
-                    placeholder={q.placeholder}
+                    placeholder={questionExample}
                     value={answers[q.id] || ""}
                     onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
                     className={`${inputCls} leading-relaxed`}
@@ -847,7 +1132,7 @@ export default function SmartDraftPage({
                 ) : (
                   <input
                     type="text"
-                    placeholder={q.placeholder}
+                    placeholder={questionExample}
                     value={answers[q.id] || ""}
                     onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
                     className={inputCls}
@@ -855,18 +1140,21 @@ export default function SmartDraftPage({
                 )}
 
                 {/* Persistent step-by-step example for detail fields — stays visible while typing */}
-                {isDetail && q.placeholder && (
-                  <div className="flex items-start gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface-2)] px-3 py-2">
+                {questionExample && (
+                  <div className={isDetail
+                    ? "flex items-start gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface-2)] px-3 py-2"
+                    : "flex items-start gap-2 px-1"
+                  }>
                     <Sparkles className="h-3.5 w-3.5 text-primary-500 mt-0.5 flex-shrink-0" />
                     <div className="min-w-0 flex-1">
                       <p className="text-[11px] leading-relaxed text-[var(--text-tertiary)]">
                         <span className="font-semibold text-primary-400">Example to follow — </span>
-                        {q.placeholder}
+                        {questionExample}
                       </p>
-                      {!filled && (
+                      {isDetail && !filled && (
                         <button
                           type="button"
-                          onClick={() => setAnswers((prev) => ({ ...prev, [q.id]: q.placeholder }))}
+                          onClick={() => setAnswers((prev) => ({ ...prev, [q.id]: questionExample }))}
                           className="mt-1.5 text-[11px] font-semibold text-primary-400 hover:text-primary-300 transition-colors"
                         >
                           Use this example, then edit the details →
@@ -922,6 +1210,8 @@ export default function SmartDraftPage({
           <h2 className="text-lg font-bold text-[var(--text-primary)]">Review Before Generating</h2>
         </div>
 
+        <StructuredIntakePanel classification={classification} questions={questions} answers={answers} />
+
         <Card className="p-6 space-y-5">
           {/* Disclaimer banner */}
           <div className="flex items-start gap-3 bg-warning-500/10 border border-warning-500/30 rounded-xl p-4">
@@ -930,7 +1220,7 @@ export default function SmartDraftPage({
               <p className="text-sm font-bold text-warning-500 mb-1">AI Generated Draft — Disclaimer</p>
               <p className="text-xs text-warning-500/90 leading-relaxed">
                 This is an AI-generated draft. Please have it reviewed by a licensed lawyer before use.
-                Missing fields (<span className="font-bold">❌</span>) will be left blank — fill them manually before submission.
+                Blank fields will remain as ___________ so the process can continue without invented facts.
               </p>
             </div>
           </div>
@@ -943,14 +1233,14 @@ export default function SmartDraftPage({
                 const filled = !!answers[q.id]?.trim();
                 return (
                   <div key={q.id} className="flex items-center gap-3 px-3.5 py-2.5 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-default)]">
-                    <span className={`text-base flex-shrink-0 ${filled ? "text-emerald-400" : "text-red-400"}`}>
-                      {filled ? "✅" : "❌"}
+                    <span className={`text-[11px] font-semibold uppercase tracking-wide flex-shrink-0 ${filled ? "text-emerald-400" : "text-[var(--text-tertiary)]"}`}>
+                      {filled ? "Filled" : "Blank"}
                     </span>
                     <span className="text-sm text-[var(--text-secondary)] flex-1">{q.label}</span>
                     {filled ? (
                       <span className="text-xs text-[var(--text-tertiary)] truncate max-w-[140px]">{answers[q.id]}</span>
                     ) : (
-                      <span className="text-xs text-red-400/70">will be blank</span>
+                      <span className="text-xs text-[var(--text-tertiary)]">will stay blank</span>
                     )}
                   </div>
                 );
@@ -967,8 +1257,8 @@ export default function SmartDraftPage({
                 missing === 0 ? "bg-success-500/10 text-success-500 border border-success-500/25" : "bg-[var(--bg-surface-2)] text-[var(--text-tertiary)] border border-[var(--border-subtle)]"
               }`}>
                 {missing === 0
-                  ? `✅ All ${filled} fields filled — document will be complete`
-                  : `ℹ️ ${filled} filled • ${missing} missing (will be left blank)`}
+                  ? `All ${filled} fields answered. The draft can use full details.`
+                  : `${filled} answered - ${missing} blank. Blank fields will remain as ___________.`}
               </div>
             );
           })()}
@@ -1272,8 +1562,10 @@ export default function SmartDraftPage({
         )}
           </div>{/* end left column */}
 
-          {/* Quick examples — side panel (fills the right space) */}
-          <div className="lg:pt-1">
+          {/* Document catalogue or quick examples — side panel */}
+          {documentGroups.length > 0 ? (
+            <DocumentCatalogPanel groups={documentGroups} language={language} onSelect={selectCatalogItem} />
+          ) : <div className="lg:pt-1">
             <p className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3 flex items-center gap-1.5">
               <Sparkles className="h-3.5 w-3.5 text-primary-500" /> Quick examples
             </p>
@@ -1288,7 +1580,7 @@ export default function SmartDraftPage({
                 </button>
               ))}
             </div>
-          </div>
+          </div>}
         </div>{/* end grid */}
 
         {error && <div className="bg-red-50 border border-red-200 rounded-xl p-3"><p className="text-red-700 text-sm">{error}</p></div>}

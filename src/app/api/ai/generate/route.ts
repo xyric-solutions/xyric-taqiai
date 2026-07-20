@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAllTemplates, getTemplate } from "@/templates";
 import { generateDocument } from "@/lib/gemini";
 import { isIncompleteLegalDocument, normalizeGeneratedHtml } from "@/lib/document-html";
-import { formatAmountFull, isAmountField } from "@/lib/pk-format";
+import { formatAmountFull, formatMonetaryAmountsInHtml, isMonetaryField, parseMonetaryValue } from "@/lib/pk-format";
 import { TemplateDefinition } from "@/templates/types";
+import { buildVakalatnamaHtml } from "@/templates/power-of-attorney/vakalatnama";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
-import { findCaseIntakeProfile, knowledgeBlock } from "@/lib/case-builder-knowledge";
+import { documentKnowledgeBlock, findDocumentIntakeProfile } from "@/lib/document-intake-knowledge";
 import {
   auditCourtDraftStructure,
   buildCourtReformatPrompt,
@@ -117,7 +118,10 @@ GLOBAL FORMAT RULES (STRICTLY FOLLOW FOR EVERY DOCUMENT):
 4. Court cases, petitions, applications, and suits must NOT stop at "RESPECTFULLY SHEWETH:".
 5. After "RESPECTFULLY SHEWETH:", include at least 7 complete numbered paragraphs, then prayer, verification, and signature blocks where applicable.
 6. Affidavits, agreements, notices, deeds, and powers of attorney must include complete body clauses and signature sections.
-7. If information is missing, write "___________"; do not omit the clause or section.`;
+7. If information is missing, write "___________"; do not omit the clause or section.
+8. Every monetary amount must use the Pakistani numbering system and be written in figures and words, for example: Rs. 1,00,000/- (Rupees One Lac Only) and Rs. 5,00,00,000/- (Rupees Five Crore Only).
+9. Use Pakistani comma grouping (thousand, lac, crore, arab, kharab). Never use international million, billion, or trillion wording or comma grouping.
+10. Never write a numeric monetary amount without words, including prices, rent, deposits, salaries, fees, damages, compensation, loans, taxes, fines, maintenance, dower, and costs.`;
 }
 
 // Remove unwanted witness/notary sections from AI output
@@ -169,10 +173,10 @@ function processAmountFields(formData: Record<string, string>, template: Templat
   const processed = { ...formData };
   for (const field of template.formFields) {
     const value = formData[field.name];
-    if (!value || field.type !== "number") continue;
-    if (!isAmountField(field.label, field.labelUrdu)) continue;
-    const num = parseFloat(value.replace(/,/g, ""));
-    if (!isNaN(num) && num > 0) {
+    if (!value) continue;
+    if (!isMonetaryField(field.name, field.label)) continue;
+    const num = parseMonetaryValue(value);
+    if (num !== null) {
       processed[field.name] = formatAmountFull(num);
     }
   }
@@ -210,6 +214,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (category === "power-of-attorney" && subType === "vakalatnama") {
+      return NextResponse.json({ html: buildVakalatnamaHtml(formData) });
+    }
+
     // Format amount fields to Pakistani format before sending to AI
     const processedFormData = processAmountFields(formData, template);
 
@@ -217,12 +225,12 @@ export async function POST(request: NextRequest) {
     const categoryRules = getCategoryRules(category, language || "en");
     const draftingRequest = [template.name, template.description, category, subType].join(" ");
     const courtStandard = getCourtDraftingStandard(draftingRequest);
-    const intakeProfile = findCaseIntakeProfile({ sections: draftingRequest, documentNeeded: template.name });
-    const corpusKnowledge = knowledgeBlock(intakeProfile);
+    const documentProfile = findDocumentIntakeProfile({ category, userRequest: draftingRequest });
+    const documentIntakeKnowledge = documentKnowledgeBlock(documentProfile, template.name);
     const enhancedPrompt = template.promptTemplate
       + categoryRules
       + getGlobalDocumentRules()
-      + (corpusKnowledge ? `\n\nANONYMIZED CORPUS-DERIVED LEGAL KNOWLEDGE:\n${corpusKnowledge}` : "")
+      + (documentIntakeKnowledge ? `\n\nSTRUCTURED ALL DOCUMENTS CLASSIFICATION:\n${documentIntakeKnowledge}` : "")
       + courtStandard.prompt;
 
     let html = await generateDocument(
@@ -268,6 +276,7 @@ IMPORTANT: Regenerate the COMPLETE document from the beginning. The previous out
     // Post-process: strip out witness/notary sections that shouldn't be there
     html = stripUnwantedSections(html, category);
     html = normalizeGeneratedHtml(html);
+    html = formatMonetaryAmountsInHtml(html);
 
     return NextResponse.json({ html });
   } catch (error: unknown) {

@@ -5,16 +5,26 @@ import { FormField } from "@/templates/types";
 import Input from "@/components/ui/Input";
 import Button from "@/components/ui/Button";
 import { Sparkles } from "lucide-react";
-import { formatPKR, toPKWords, isAmountField } from "@/lib/pk-format";
+import { formatAmountFull, isAmountField } from "@/lib/pk-format";
+import { getDocumentFieldExample } from "@/lib/document-field-examples";
 
 interface DynamicFormProps {
   fields: FormField[];
   onSubmit: (data: Record<string, string>) => void;
   loading?: boolean;
   language?: string;
+  documentType?: string;
 }
 
-export default function DynamicForm({ fields, onSubmit, loading, language = "en" }: DynamicFormProps) {
+function FieldExample({ example }: { example: string }) {
+  return (
+    <p className="mt-1.5 text-xs leading-relaxed text-[var(--text-tertiary)]">
+      <span className="font-semibold text-primary-500">Example: </span>{example}
+    </p>
+  );
+}
+
+export default function DynamicForm({ fields, onSubmit, loading, language = "en", documentType = "legal document" }: DynamicFormProps) {
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const isUrdu = language === "ur";
@@ -63,7 +73,15 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
 
   const renderField = (field: FormField) => {
     const label = isUrdu ? field.labelUrdu : field.label;
-    const placeholder = isUrdu ? field.placeholderUrdu : field.placeholder;
+    const placeholder = getDocumentFieldExample({
+      id: field.name,
+      label,
+      documentType,
+      fieldType: field.type,
+      language,
+      providedExample: isUrdu ? field.placeholderUrdu || field.placeholder : field.placeholder,
+      options: field.options,
+    });
 
     switch (field.type) {
       case "textarea":
@@ -82,6 +100,7 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
               value={formData[field.name] || ""}
               onChange={(e) => handleChange(field.name, e.target.value)}
             />
+            <FieldExample example={placeholder} />
             {field.aiSuggestable && (
               <p className="mt-1.5 text-xs text-primary-500 flex items-center gap-1.5 font-medium">
                 <Sparkles className="h-3 w-3" /> AI can help suggest content for this field
@@ -112,12 +131,18 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
                 </option>
               ))}
             </select>
+            <FieldExample example={placeholder} />
             {errors[field.name] && <p className="mt-1.5 text-sm text-danger-500">{errors[field.name]}</p>}
           </div>
         );
 
       case "date":
-        return <Input key={field.name} type="date" label={label} required={field.required} value={formData[field.name] || ""} onChange={(e) => handleChange(field.name, e.target.value)} error={errors[field.name]} />;
+        return (
+          <div key={field.name}>
+            <Input type="date" label={label} required={field.required} value={formData[field.name] || ""} onChange={(e) => handleChange(field.name, e.target.value)} error={errors[field.name]} />
+            <FieldExample example={placeholder} />
+          </div>
+        );
 
       case "number": {
         const isAmt = isAmountField(field.label, field.labelUrdu);
@@ -127,12 +152,10 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
         return (
           <div key={field.name}>
             <Input type="number" label={label} required={field.required} placeholder={placeholder} value={rawVal} onChange={(e) => handleChange(field.name, e.target.value)} error={errors[field.name]} />
+            <FieldExample example={placeholder} />
             {showPreview && (
-              <div className="mt-2 px-3 py-2 bg-success-500/10 border border-success-500/25 rounded-lg text-xs space-y-0.5 text-[var(--text-secondary)]">
-                <p className="font-semibold text-success-500">{formatPKR(numVal)}: {toPKWords(numVal)}</p>
-                {numVal >= 100000 && (
-                  <p>Half: {formatPKR(numVal / 2)}, {toPKWords(numVal / 2)}</p>
-                )}
+              <div className="mt-2 px-3 py-2 bg-success-500/10 border border-success-500/25 rounded-lg text-xs text-[var(--text-secondary)]">
+                <p className="font-semibold text-success-500">{formatAmountFull(numVal)}</p>
               </div>
             )}
           </div>
@@ -141,31 +164,43 @@ export default function DynamicForm({ fields, onSubmit, loading, language = "en"
 
       case "cnic":
         return (
-          <Input
-            key={field.name}
-            type="text"
-            label={label}
-            required={field.required}
-            placeholder="XXXXX-XXXXXXX-X"
-            value={formData[field.name] || ""}
-            onChange={(e) => {
-              let val = e.target.value.replace(/[^0-9-]/g, "");
-              const digits = val.replace(/-/g, "");
-              if (digits.length <= 5) val = digits;
-              else if (digits.length <= 12) val = `${digits.slice(0, 5)}-${digits.slice(5)}`;
-              else val = `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12, 13)}`;
-              handleChange(field.name, val);
-            }}
-            maxLength={15}
-            error={errors[field.name]}
-          />
+          <div key={field.name}>
+            <Input
+              type="text"
+              label={label}
+              required={field.required}
+              placeholder={placeholder}
+              value={formData[field.name] || ""}
+              onChange={(e) => {
+                let val = e.target.value.replace(/[^0-9-]/g, "");
+                const digits = val.replace(/-/g, "");
+                if (digits.length <= 5) val = digits;
+                else if (digits.length <= 12) val = `${digits.slice(0, 5)}-${digits.slice(5)}`;
+                else val = `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12, 13)}`;
+                handleChange(field.name, val);
+              }}
+              maxLength={15}
+              error={errors[field.name]}
+            />
+            <FieldExample example={placeholder} />
+          </div>
         );
 
       case "phone":
-        return <Input key={field.name} type="tel" label={label} required={field.required} placeholder="03XX-XXXXXXX" value={formData[field.name] || ""} onChange={(e) => handleChange(field.name, e.target.value)} error={errors[field.name]} />;
+        return (
+          <div key={field.name}>
+            <Input type="tel" label={label} required={field.required} placeholder={placeholder} value={formData[field.name] || ""} onChange={(e) => handleChange(field.name, e.target.value)} error={errors[field.name]} />
+            <FieldExample example={placeholder} />
+          </div>
+        );
 
       default:
-        return <Input key={field.name} type="text" label={label} required={field.required} placeholder={placeholder} value={formData[field.name] || ""} onChange={(e) => handleChange(field.name, e.target.value)} error={errors[field.name]} />;
+        return (
+          <div key={field.name}>
+            <Input type="text" label={label} required={field.required} placeholder={placeholder} value={formData[field.name] || ""} onChange={(e) => handleChange(field.name, e.target.value)} error={errors[field.name]} />
+            <FieldExample example={placeholder} />
+          </div>
+        );
     }
   };
 

@@ -93,6 +93,7 @@ import { customAgreement } from "./agreements/custom-agreement";
 // Power of Attorney
 import { generalPOA } from "./power-of-attorney/general";
 import { specialCourtPOA } from "./power-of-attorney/special-court";
+import { vakalatnama } from "./power-of-attorney/vakalatnama";
 
 // Family Law
 import { divorceDeed } from "./family-law/divorce-deed";
@@ -286,6 +287,7 @@ const allTemplates: TemplateDefinition[] = [
   // Power of Attorney
   generalPOA,
   specialCourtPOA,
+  vakalatnama,
   // Family Law
   divorceDeed,
   marriageDeed,
@@ -388,7 +390,7 @@ export const categories = [
     name: "Agreements",
     nameUrdu: "معاہدے",
     icon: "FileSignature",
-    description: "Sale Deed, Rent, Employment, Loan, Lease, NDA, MOU, Construction, Vehicle Sale, Gift Deed, Will & 20+ more",
+    description: "Vehicle Sale, Property, Rent, Employment, Loan, Lease, NDA, MOU, Construction, Gift, Will & 40+ agreement types",
     descriptionUrdu: "بیع نامہ، کرایہ، ملازمت، قرض، لیز، رازداری، تعمیرات، گاڑی فروخت، ہبہ نامہ، وصیت اور 20+ مزید",
   },
   {
@@ -396,7 +398,7 @@ export const categories = [
     name: "Power of Attorney",
     nameUrdu: "مختار نامہ",
     icon: "UserCheck",
-    description: "General and Special Power of Attorney",
+    description: "General, Special, Court Vakalatnama",
     descriptionUrdu: "عام اور خصوصی مختار نامہ",
   },
   {

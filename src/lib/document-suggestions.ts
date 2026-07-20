@@ -1,3 +1,5 @@
+import { AGREEMENT_SUGGESTIONS } from "@/lib/agreement-catalog";
+
 // ── Shared Document Autocomplete List ──
 // Each entry has: label, kw (keywords for matching), cat (category filter)
 
@@ -53,40 +55,7 @@ export const DOCUMENT_SUGGESTIONS = [
   // ══════════════════════════════════════════
   // AGREEMENTS / معاہدے
   // ══════════════════════════════════════════
-  { label: "Rent Agreement",                            kw: ["re", "rent", "kiraya", "rental"],                           cat: "agreement" },
-  { label: "Shop Rent Agreement",                       kw: ["sre", "shop rent", "dukan kiraya"],                         cat: "agreement" },
-  { label: "House Rent Agreement",                      kw: ["hre", "house rent", "makan kiraya"],                        cat: "agreement" },
-  { label: "Commercial Rent Agreement",                 kw: ["cre", "commercial rent"],                                   cat: "agreement" },
-  { label: "Residential Rent Agreement",                kw: ["rre", "residential rent"],                                  cat: "agreement" },
-  { label: "Property Sale Agreement",                   kw: ["psa", "property sale", "jaidad bai"],                       cat: "agreement" },
-  { label: "Business Partnership Deed",                 kw: ["bpd", "business part", "shirkat deed"],                     cat: "agreement" },
-  { label: "Partnership Agreement",                     kw: ["part agree", "shirkat agree"],                              cat: "agreement" },
-  { label: "Employment Agreement",                      kw: ["emp agree", "mulazmat agree"],                              cat: "agreement" },
-  { label: "Employment Contract",                       kw: ["emp cont", "job contract", "naukri"],                       cat: "agreement" },
-  { label: "Service Agreement",                         kw: ["svc", "service agree"],                                     cat: "agreement" },
-  { label: "Loan Agreement",                            kw: ["loan", "qarz agree", "lending"],                            cat: "agreement" },
-  { label: "NDA - Non-Disclosure Agreement",            kw: ["nda", "non disclosure", "secrecy"],                         cat: "agreement" },
-  { label: "MOU - Memorandum of Understanding",         kw: ["mou", "memorandum of under"],                               cat: "agreement" },
-  { label: "Joint Venture Agreement",                   kw: ["jv", "joint venture"],                                      cat: "agreement" },
-  { label: "Franchise Agreement",                       kw: ["fran", "franchise"],                                        cat: "agreement" },
-  { label: "Consultancy Agreement",                     kw: ["cons agree", "consultancy"],                                cat: "agreement" },
-  { label: "Supply / Vendor Agreement",                 kw: ["supply", "vendor agree"],                                   cat: "agreement" },
-  { label: "Construction Contract",                     kw: ["const cont", "taameer contract"],                           cat: "agreement" },
-  { label: "Freelance Agreement",                       kw: ["free", "freelance agree"],                                  cat: "agreement" },
-  { label: "Agency Agreement",                          kw: ["agency", "wakeel agree"],                                   cat: "agreement" },
-  { label: "Distribution Agreement",                   kw: ["distrib", "taqseem agree"],                                  cat: "agreement" },
-  { label: "Shareholders Agreement",                    kw: ["share agree", "hissa agree"],                               cat: "agreement" },
-  { label: "Technology / Software Agreement",           kw: ["tech agree", "software agree"],                             cat: "agreement" },
-  { label: "Lease Agreement",                           kw: ["lease", "patta agree"],                                     cat: "agreement" },
-  { label: "Settlement Agreement",                      kw: ["settle agree", "sulah agree"],                              cat: "agreement" },
-  { label: "Iqrar Nama (Declaration Agreement)",        kw: ["iqrar nama", "declaration agree"],                          cat: "agreement" },
-  { label: "Iqrar Nama Bee Muhaida (Witnessed Agreement)", kw: ["iqrar bee", "bee muhaida", "witnessed agree"],          cat: "agreement" },
-  { label: "Special Karaya Nama (Special Rent Deed)",   kw: ["special karaya", "special rent deed"],                     cat: "agreement" },
-  { label: "Sale Deed / Registry (Bai Nama)",           kw: ["sale deed", "registry", "registary", "bai nama"],          cat: "agreement" },
-  { label: "Adoption Deed",                             kw: ["adoption deed", "gotcha deed"],                             cat: "agreement" },
-  { label: "Abdal Nama (Substitution Deed)",            kw: ["abdal nama", "substitution deed"],                         cat: "agreement" },
-  { label: "Compromise Deed (Sulahnama)",               kw: ["sulahnama", "sulah nama", "compromise deed"],               cat: "agreement" },
-  { label: "Trust Deed",                                kw: ["trust deed", "trust"],                                      cat: "agreement" },
+  ...AGREEMENT_SUGGESTIONS,
 
   // ══════════════════════════════════════════
   // APPLICATIONS / درخواستیں
@@ -286,6 +255,7 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "General Power of Attorney",                 kw: ["gpa", "general poa", "mukhtarnaama aam"],                   cat: "power-of-attorney" },
   { label: "Special Power of Attorney for Property",    kw: ["spa prop", "property poa", "jaidad mukhtarnaama"],          cat: "power-of-attorney" },
   { label: "Court Appearance Power of Attorney",        kw: ["court poa", "adalat mukhtarnaama"],                         cat: "power-of-attorney" },
+  { label: "Vakalatnama / Advocate Authority",          kw: ["vakalatnama", "vakalat nama", "wakalatnama", "advocate authority"], cat: "power-of-attorney" },
   { label: "Banking / Financial Power of Attorney",     kw: ["bank poa", "financial poa"],                               cat: "power-of-attorney" },
   { label: "Revocation of Power of Attorney",           kw: ["revoke poa", "mukhtarnaama cancel"],                        cat: "power-of-attorney" },
   { label: "Power of Attorney for Overseas Pakistani",  kw: ["overseas poa", "bahar poa", "bahar wala"],                  cat: "power-of-attorney" },
@@ -306,6 +276,7 @@ export const DOCUMENT_SUGGESTIONS = [
   { label: "Appeal Against Lower Court Judgment",       kw: ["appeal judg", "lower court appeal"],                        cat: "court-cases" },
   { label: "FIR Draft",                                 kw: ["fir", "fir draft"],                                         cat: "court-cases" },
   { label: "Legal Notice",                              kw: ["legal notice", "qanooni notice"],                            cat: "court-cases" },
+  { label: "Vakalatnama",                               kw: ["vakalatnama", "vakalat nama", "wakalatnama", "advocate appointment"], cat: "court-cases" },
   { label: "Eviction Notice",                           kw: ["evict", "nikalo notice"],                                   cat: "court-cases" },
   { label: "Default / Demand Notice",                   kw: ["default notice", "demand notice"],                          cat: "court-cases" },
   { label: "First Appeal",                              kw: ["first appeal", "istinaf"],                                  cat: "court-cases" },
