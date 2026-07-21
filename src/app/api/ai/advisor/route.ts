@@ -6,13 +6,46 @@ import { Part } from "@google/generative-ai";
 import { getCurrentUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { retrieveGrounding, type GroundingSource } from "@/lib/judgment-retrieval";
+import { verifiedAuthorityGrounding } from "@/lib/verified-legal-authorities";
 import { retrieveStatuteGrounding } from "@/lib/statute-retrieval";
 import { stampDutyBlock, feeProvinceOf } from "@/lib/stamp-duty-reference";
 import { latestFinanceFeeAmendments } from "@/lib/statute-db-runtime";
 import { legalUpdatesBlock } from "@/lib/legal-updates-reference";
 import { getSafeAiError } from "@/lib/ai-error";
+import { getPlatformRecommendation, isTaqiNavigationQuery } from "@/lib/taqi-platform-knowledge";
+import {
+  decideJudgmentRetrieval,
+  LEGAL_RELIABILITY_RULES,
+  type JudgmentRetrievalDecision,
+} from "@/lib/advisor-reliability";
 
 export const dynamic = "force-dynamic";
+
+const GROUNDING_BUDGET_MS = 2_500;
+const MAX_MESSAGE_CHARS = 12_000;
+const MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
+const SUPPORTED_IMAGE_DATA_URL = /^data:image\/(?:jpeg|png|webp|gif);base64,/i;
+
+async function withinLatencyBudget<T>(
+  work: Promise<T>,
+  fallback: T,
+  label: string,
+): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    const finish = (value: T) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      console.warn(`[AI Advisor] ${label} exceeded ${GROUNDING_BUDGET_MS}ms; continuing without it.`);
+      finish(fallback);
+    }, GROUNDING_BUDGET_MS);
+    work.then(finish, () => finish(fallback));
+  });
+}
 
 /** The advisor message arrives with a system/intent prologue; pull out the real question. */
 function userQuestionFrom(message: string): string {
@@ -25,8 +58,9 @@ function compactHistory(history: unknown): { role: string; content: string }[] {
   if (!Array.isArray(history)) return [];
 
   return history
+    .slice(-16)
     .filter((msg): msg is { role: string; content: string } =>
-      typeof msg?.role === "string" && typeof msg?.content === "string"
+      (msg?.role === "user" || msg?.role === "assistant") && typeof msg?.content === "string"
     )
     .slice(-8)
     .map((msg) => ({
@@ -35,42 +69,50 @@ function compactHistory(history: unknown): { role: string; content: string }[] {
     }));
 }
 
-/** Does the user actually want case-law / precedent shown? */
-function wantsCaseLaw(q: string): boolean {
-  return /\b(case[ -]?law|judg?ements?|judgments?|precedents?|rulings?|authorit(y|ies)|citations?|scmr|\bpld\b|\bplj\b|\bylr\b|\bmld\b|faisl[ae]|nazair|misal)\b/i.test(q);
+function isProvisionExplanationQuery(q: string): boolean {
+  return (
+    /\b(?:section|sections|sec\.?|article|dafa)\s*\d{1,4}(?:\s*[-/]?\s*[A-Z])?\b/i.test(q) ||
+    /\b\d{2,4}\s*[-/]?\s*[A-Z]\s*(?:PPC|Cr\.?P\.?C\.?|C\.?P\.?C\.?|CrPC|CPC|QSO)?\b/i.test(q) ||
+    /\b(?:what is|explain|meaning of|ingredients of|punishment under|scope of)\s+(?:section\s*)?\d{2,4}\b/i.test(q)
+  );
+}
+
+function judgmentAnswerRequirements(
+  decision: JudgmentRetrievalDecision,
+  sourceCount: number,
+): string {
+  if (!decision.shouldRetrieve) {
+    return `JUDGMENT POLICY: This is a general informational question. Answer it directly without adding judgments or case citations.`;
+  }
+  if (!sourceCount) {
+    return `JUDGMENT POLICY: This query would benefit from precedent, but no sufficiently relevant verified judgment was retrieved. Answer from verified law and principle only, say that directly relevant case law should be checked, and never invent a citation.`;
+  }
+  return `JUDGMENT POLICY (mandatory for this ${decision.reason.replace(/-/g, " ")}):
+- Include a short RELEVANT JUDGMENTS section after the legal analysis.
+- Use only the 1-4 retrieved judgments that directly support the answer; omit marginal matches.
+- For each judgment, give its case title or citation, the precise principle supported by the supplied excerpt, and one brief sentence connecting that principle to the user's issue.
+- Do not provide a bare citation list, repeat the same proposition, or claim a holding that is absent from the supplied excerpt.`;
+}
+
+function provisionAnswerRequirements(q: string): string {
+  if (!isProvisionExplanationQuery(q)) return "";
+  return `PROVISION EXPLANATION REQUIREMENTS (mandatory):
+- Give a substantive explanation, not a two-line definition.
+- State the exact statutory subject and current punishment only from retrieved law.
+- Explain the legal ingredients in plain language, including the prohibited act and any mental element supported by the retrieved text or authorities.
+- Cover cognizability, bail, compounding, investigating authority, trial court, charge, and evidentiary safeguards only when the supplied sources establish them.
+- Distinguish nearby provisions where confusion is likely.
+- Summarize 2-4 directly relevant verified judgments when supplied, naming the case/citation and the precise proposition each supports.
+- Separate the rule of law from fact-sensitive application. Never imply that an accusation itself proves the offence.`;
 }
 
 function wantsTaqiGuidance(q: string): boolean {
-  const text = q.toLowerCase();
-  const asksHowOrWhere =
-    /\b(how|how can|how do|where|which|option|options|what feature|what module|kaise|kese|kahan|kaha|kidhar|konsa|kaunsa|tareeqa|tarika)\b/i.test(text);
-  const explicitlyDraftHere =
-    !asksHowOrWhere &&
-    (/\b(draft|write|type|prepare|generate|create)\b.*\b(for me|here|now|complete|full|the document|the petition|the application)\b/i.test(text) ||
-      /\b(please\s+)?(draft|write|type|generate)\b/i.test(text) ||
-      /\b(likh\s+do|bana\s+do|draft\s+kar\s+do|type\s+kar\s+do|tayyar\s+kar\s+do)\b/i.test(text));
-  if (explicitlyDraftHere) return false;
-
-  const explicitPlatform =
-    /\b(taqi|taqi ai|platform|app|module|feature|tool|dashboard|case builder|legal advisor|ai advisor|templates?|document drafting|voice case|copy from photo|case law|judgments?|statute search|lawyer diary|my documents|translate|tax calculator)\b/i.test(text);
-  const asksNavigation =
-    /\b(how|where|which|what feature|what module|when should|should i use|use|open|go to|start|search|type|typing|best feature|best module|guide|steps?|kaise|kahan|kaha|kidhar|konsa|kaunsa|konse|kis|kis jagah|istamal|istemal|tareeqa|tarika)\b/i.test(text);
-  const asksWhereToWork =
-    /\b(where|where should|where can|kahan|kaha|kidhar|kis jagah|which module|which feature|kaun(?:sa|si|se)|kon(?:sa|si|se)|konsa|kaunsa)\b/i.test(text) &&
-    /\b(type|typing|draft|prepare|search|make|create|draft\s+kar|type\s+kar|search\s+kar|tayyar)\b/i.test(text);
-  const asksHowToDraft =
-    asksHowOrWhere &&
-    /\b(draft|prepare|type|typing|create|make|generate|case|document|petition|application|draft\s+kar|draft\s+karna|type\s+kar|type\s+karna|tayyar|tayyar\s+karna)\b/i.test(text);
-  const asksToStartDraftingWorkflow =
-    /\b(i want|i need|need to|want to|mujhe|muje|mera|meri|main|ma|mai)\b/i.test(text) &&
-    /\b(draft|prepare|type|typing|create|make|generate|case|document|petition|application|draft\s+karna|type\s+karna|tayyar\s+karna)\b/i.test(text);
-  const taskChoice =
-    /\b(i want to prepare this case|prepare this case|where can i draft this case|where should i type this case|where should i prepare this case|which module .*legal task|which feature .*legal task|best module .*legal task|how do i use case builder)\b/i.test(text);
-  return taskChoice || asksWhereToWork || asksHowToDraft || asksToStartDraftingWorkflow || (explicitPlatform && asksNavigation);
+  return isTaqiNavigationQuery(q);
 }
 
 function prefersRomanUrdu(q: string): boolean {
-  return /\b(mera|meri|kaha|kahan|kidhar|karoo|karo|karna|ma|mai|main|meny|mene|ha|hai|ka|ki|kis|konsa|kaunsa|tayyar)\b/i.test(q);
+  const markers = q.match(/\b(mera|meri|mujhe|muje|kaha|kahan|kidhar|karoo|karoon|karo|karna|mai|main|meny|mene|hai|kis|konsa|kaunsa|tayyar)\b/gi) || [];
+  return new Set(markers.map((marker) => marker.toLowerCase())).size >= 2;
 }
 
 function documentCategory(question: string): { category: string; route: string; templateHint: string } {
@@ -242,6 +284,9 @@ function buildDraftingWorkflowAnswer(question: string): string {
 }
 
 function buildTaqiGuidanceAnswer(question: string): string {
+  const recommendation = getPlatformRecommendation(question);
+  if (recommendation) return recommendation.answer;
+
   if (isDraftingWorkflowQuestion(question)) {
     return buildDraftingWorkflowAnswer(question);
   }
@@ -285,6 +330,12 @@ function streamStaticAdvisorAnswer(text: string, intent: string, sources: Ground
   });
 }
 
+export async function GET() {
+  const session = await getCurrentUser();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  return NextResponse.json({ ready: true });
+}
+
 export async function POST(request: NextRequest) {
   const session = await getCurrentUser();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -293,23 +344,50 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    let body;
+    let body: unknown;
     try {
       body = await request.json();
     } catch {
       return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
     }
-    const { message, history, image } = body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
+
+    const payload = body as Record<string, unknown>;
+    if (payload.message != null && typeof payload.message !== "string") {
+      return NextResponse.json({ error: "Message must be text" }, { status: 400 });
+    }
+    if (payload.image != null && typeof payload.image !== "string") {
+      return NextResponse.json({ error: "Image must be a supported data URL" }, { status: 400 });
+    }
+
+    const message = typeof payload.message === "string" ? payload.message.trim() : "";
+    const history = payload.history;
+    const image = typeof payload.image === "string" ? payload.image : "";
+    const source = payload.source === "legal-advisor" ? "legal-advisor" : undefined;
 
     if (!message && !image) {
       return NextResponse.json({ error: "Message or image is required" }, { status: 400 });
+    }
+    if (message.length > MAX_MESSAGE_CHARS) {
+      return NextResponse.json(
+        { error: `Question is too long. Please keep it under ${MAX_MESSAGE_CHARS.toLocaleString("en-PK")} characters.` },
+        { status: 413 },
+      );
+    }
+    if (image.length > MAX_IMAGE_DATA_URL_CHARS) {
+      return NextResponse.json({ error: "Image is too large. Please upload an image under 10 MB." }, { status: 413 });
+    }
+    if (image && !SUPPORTED_IMAGE_DATA_URL.test(image.slice(0, 64))) {
+      return NextResponse.json({ error: "Unsupported image format. Use JPG, PNG, WEBP, or GIF." }, { status: 400 });
     }
 
     const realQuestion = userQuestionFrom(message || "");
     const compacted = compactHistory(history);
     const intent = detectIntent(realQuestion);
     const finalLanguageRule = buildLanguageRule(realQuestion || message || "");
-    const platformGuidance = wantsTaqiGuidance(realQuestion);
+    const platformGuidance = source === "legal-advisor" && wantsTaqiGuidance(realQuestion);
     if (platformGuidance && !image) {
       return streamStaticAdvisorAnswer(
         buildTaqiGuidanceAnswer(realQuestion || "How should I use Taqi AI?"),
@@ -317,39 +395,55 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const prompt = buildAIPrompt(message || "Analyze this legal document", compacted);
+    const prompt = buildAIPrompt(realQuestion || "Analyze this legal document", compacted);
 
-    // Only surface judgments when they're actually wanted — a fresh (first)
-    // question, or whenever the user explicitly asks for case-law/precedent.
-    // Plain conversational follow-ups stay clean (no judgment dump every turn).
-    const isFollowUp = compacted.length > 0;
-    const groundNow = !platformGuidance && !image && !!message && (!isFollowUp || wantsCaseLaw(realQuestion));
+    const verifiedAuthorities = verifiedAuthorityGrounding(realQuestion);
+    const judgmentDecision = decideJudgmentRetrieval(realQuestion);
+    // Retrieve precedent for explicit requests, statutory interpretation, and
+    // fact-specific disputes. Definitions, navigation, and routine general
+    // information intentionally remain judgment-free.
+    const groundNow = !platformGuidance && !image && !!message
+      && judgmentDecision.shouldRetrieve;
     // Statute grounding runs on EVERY text turn — the latest Act text should
     // ground the answer to the law itself (e.g. stamp paper), unlike judgments
     // which we only surface when actually wanted.
     const statuteNow = !platformGuidance && !image && !!message;
 
-    let sources: GroundingSource[] = [];
     const blocks: string[] = [];
-    if (groundNow) {
-      const { sources: found, block } = await retrieveGrounding(realQuestion);
-      if (block) {
-        sources = found;
-        blocks.push(block);
-      }
-    }
-    let statuteCount = 0;
+    const emptyJudgments = { sources: [] as GroundingSource[], block: "" };
+    const emptyStatutes = { hits: [], block: "" };
+    const needsFinanceGrounding = statuteNow && !!stampDutyBlock(realQuestion, []);
+    const [judgmentGrounding, statuteGrounding, financeAmends] = await Promise.all([
+      groundNow && !verifiedAuthorities.exclusive
+        ? withinLatencyBudget(
+            retrieveGrounding(realQuestion, judgmentDecision.maxResults),
+            emptyJudgments,
+            "judgment grounding",
+          )
+        : Promise.resolve(emptyJudgments),
+      statuteNow
+        ? withinLatencyBudget(retrieveStatuteGrounding(realQuestion, 6), emptyStatutes, "statute grounding")
+        : Promise.resolve(emptyStatutes),
+      needsFinanceGrounding
+        ? withinLatencyBudget(
+            latestFinanceFeeAmendments(feeProvinceOf(realQuestion)),
+            [],
+            "finance amendment grounding",
+          )
+        : Promise.resolve([]),
+    ]);
+
+    const sources = [...verifiedAuthorities.sources, ...judgmentGrounding.sources]
+      .filter((source, index, all) => all.findIndex((candidate) => candidate.id === source.id) === index);
+    if (verifiedAuthorities.block) blocks.push(verifiedAuthorities.block);
+    if (judgmentGrounding.block) blocks.push(judgmentGrounding.block);
+    const statuteCount = statuteGrounding.hits.length;
+    if (statuteGrounding.block) blocks.push(statuteGrounding.block);
     if (statuteNow) {
-      const { hits, block: statuteBlock } = await retrieveStatuteGrounding(realQuestion);
-      if (statuteBlock) {
-        statuteCount = hits.length;
-        blocks.push(statuteBlock);
-      }
       // Fee/stamp-duty amounts go LAST so they sit closest to the question and
       // take precedence over the raw schedule text. Combines curated verified
       // amounts with the latest provincial Finance-Act amendment text (covers
       // every province / instrument, not just the curated ones).
-      const financeAmends = await latestFinanceFeeAmendments(feeProvinceOf(realQuestion));
       const stampBlock = stampDutyBlock(realQuestion, financeAmends);
       if (stampBlock) blocks.push(stampBlock);
 
@@ -358,9 +452,14 @@ export async function POST(request: NextRequest) {
       const updatesBlock = legalUpdatesBlock(realQuestion);
       if (updatesBlock) blocks.push(updatesBlock);
     }
-    const groundedPrompt = blocks.length
-      ? `${prompt}\n\n${blocks.join("\n\n")}\n\n${finalLanguageRule}`
-      : prompt;
+    const groundedPrompt = [
+      prompt,
+      provisionAnswerRequirements(realQuestion),
+      blocks.join("\n\n"),
+      judgmentAnswerRequirements(judgmentDecision, sources.length),
+      LEGAL_RELIABILITY_RULES,
+      finalLanguageRule,
+    ].filter(Boolean).join("\n\n");
 
     console.log(`[AI Advisor] Intent: ${intent}, Has Image: ${!!image}, Judgments: ${sources.length}, Statutes: ${statuteCount}`);
 
@@ -386,6 +485,7 @@ export async function POST(request: NextRequest) {
         const send = (obj: unknown) =>
           controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
         try {
+          send({ type: "status", message: "Preparing legal answer" });
           for await (const delta of geminiGenerateStream(parts)) {
             send({ type: "delta", text: delta });
           }

@@ -58,6 +58,8 @@ const CODE_MAP: { re: RegExp; like: string }[] = [
 ];
 
 const TOPIC_HINTS: { re: RegExp; like: string; kw: string }[] = [
+  { re: /\b(whatsapp|digital|electronic|audio|voice recording|video recording|electronic evidence)\b/i, like: "%Qanun-e-Shahadat%", kw: "modern devices" },
+  { re: /\b(vehicle|motor vehicle|car)\b.*\b(transfer|ownership|registration|excise)\b|\b(transfer|ownership|registration|excise)\b.*\b(vehicle|motor vehicle|car)\b/i, like: "%Motor Vehicles%", kw: "transfer of ownership" },
   { re: /\bkhula\b/i, like: "%Family Courts%", kw: "khula" },
   { re: /\b(maintenance|nafqa|nan\s*nafqa)\b/i, like: "%Family Courts%", kw: "maintenance" },
   { re: /\b(dower|mehr|haq\s*mehr)\b/i, like: "%Muslim Family Laws%", kw: "dower" },
@@ -73,7 +75,7 @@ const TOPIC_HINTS: { re: RegExp; like: string; kw: string }[] = [
 function excerptForSection(fullText: string, num: string, suffix: string): string | null {
   const numEsc = num.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(
-    `(^|[\\s.])${numEsc}\\s*[-]?\\s*${suffix || "[A-Z]?"}\\.?[\\s\\u2014:.-]+[A-Z\\u201c"\\[]`,
+    `(^|[\\s.])(?:\\d+\\[)?${numEsc}\\s*[-]?\\s*${suffix || "[A-Z]?"}\\.?[\\s\\u2014:.-]+[A-Z\\u201c"\\[]`,
     "g"
   );
   let best = -1;
@@ -126,7 +128,8 @@ async function preciseSectionHitsPg(question: string): Promise<StatuteHit[]> {
 
   const num = match[1];
   const suffix = match[2] || "";
-  const isConstitution = /constitution|article/i.test(question);
+  const isConstitution = code.like.includes("Constitution");
+  const isQso = code.like.includes("Qanun-e-Shahadat");
 
   const rows = isConstitution
     ? await prisma.$queryRawUnsafe<any[]>(
@@ -162,7 +165,7 @@ async function preciseSectionHitsPg(question: string): Promise<StatuteHit[]> {
       province: row.province || "Federal",
       docType: row.doc_type || "act",
       year: row.act_year ?? null,
-      sectionNo: isConstitution ? `Article ${num}` : `${num}${suffix ? "-" + suffix : ""}`,
+      sectionNo: isConstitution || isQso ? `Article ${num}` : `${num}${suffix ? "-" + suffix : ""}`,
       title: null,
       body,
     },
@@ -189,7 +192,7 @@ async function topicHintsPg(question: string): Promise<StatuteHit[]> {
   if (!row) return [];
 
   const text: string = row.full_text || "";
-  const idx = text.toLowerCase().indexOf(hint.kw.toLowerCase());
+  const idx = text.toLowerCase().lastIndexOf(hint.kw.toLowerCase());
   const body = (idx > -1 ? text.slice(Math.max(0, idx - 80), idx + 900) : text.slice(0, 900))
     .replace(/\s+/g, " ")
     .trim();

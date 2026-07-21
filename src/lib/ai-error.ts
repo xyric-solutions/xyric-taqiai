@@ -38,6 +38,8 @@ export function getSafeAiError(
     message.includes("econnreset") ||
     message.includes("etimedout") ||
     message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("aborted") ||
     message.includes("503") ||
     message.includes("500") ||
     message.includes("overloaded") ||

@@ -1,19 +1,21 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo } from "react";
+import Image from "next/image";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import { Send, Scale, Trash2, ExternalLink, Sparkles, BookOpen, ChevronRight, Mic, ImagePlus, X, Pencil, AlertTriangle, Plus, History, HelpCircle } from "lucide-react";
-import { detectIntent, detectAllIntents, getIntentMeta, getIntentSystemPrompt } from "@/lib/intent-detection";
+import { detectAllIntents } from "@/lib/intent-detection";
 import Link from "next/link";
 
 interface GroundingSource {
-  id: number;
+  id: number | string;
   citation: string;
   court: string;
   year: number;
   title: string | null;
   reported: boolean;
+  externalUrl?: string;
 }
 
 interface Message {
@@ -22,6 +24,7 @@ interface Message {
   image?: string;
   // S04-05: uncertainty flag
   isUncertain?: boolean;
+  isError?: boolean;
   // verified judgments retrieved from the corpus that grounded this answer
   sources?: GroundingSource[];
 }
@@ -40,6 +43,17 @@ interface ApiChatSession {
 // fresh chat — long chats drift off-topic and dilute the grounded context,
 // which is the real driver of hallucination (not the per-turn history window).
 const SOFT_MESSAGE_LIMIT = 30;
+const MAX_MESSAGE_CHARS = 12_000;
+const ADVISOR_RESPONSE_TIMEOUT_MS = 20_000;
+const ADVISOR_STREAM_IDLE_TIMEOUT_MS = 22_000;
+const TAQI_LINK_ROUTES = new Set([
+  "/dashboard", "/ai-advisor", "/case-law", "/case-builder", "/statute-search",
+  "/voice-case", "/copy-from-photo", "/affidavits", "/agreements", "/applications",
+  "/family-law", "/criminal-law", "/property-law", "/civil-law", "/corporate-law",
+  "/tax-law", "/immigration-law", "/constitutional-law", "/non-muslim-laws",
+  "/power-of-attorney", "/documents", "/lawyer-diary", "/cases", "/chamber",
+  "/translate", "/property-transfer/tax-calculator", "/settings",
+]);
 
 interface ApiChatMessage {
   id: string;
@@ -72,6 +86,7 @@ export default function AIAdvisorPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [advisorStatus, setAdvisorStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [uploadedImageName, setUploadedImageName] = useState("");
@@ -102,11 +117,13 @@ export default function AIAdvisorPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeAdvisorRequestRef = useRef<AbortController | null>(null);
   // WhatsApp-style recording UI: live elapsed timer + a cancel flag so we can
   // discard a recording without transcribing it.
   const [recordSeconds, setRecordSeconds] = useState(0);
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelledRef = useRef(false);
+  useEffect(() => () => activeAdvisorRequestRef.current?.abort(), []);
   // Keep the view pinned to the latest message, but smoothly:
   //  - use "auto" (instant) while streaming so per-token "smooth" animations
   //    don't pile up and stutter; "smooth" only when a turn finishes.
@@ -224,11 +241,14 @@ export default function AIAdvisorPage() {
 
   // Create a fresh empty session and make it active.
   const createSession = async (): Promise<string | null> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
     try {
       const res = await fetch("/api/chat/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
+        signal: controller.signal,
         body: JSON.stringify({}),
       });
       if (res.ok) {
@@ -239,9 +259,28 @@ export default function AIAdvisorPage() {
       }
     } catch {
       // silent — chat works without persistence as a fallback
+    } finally {
+      clearTimeout(timeout);
     }
     return null;
   };
+
+  // Compile and authenticate the advisor route while the user reads the page,
+  // so the first submitted question is not charged for a server cold start.
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ADVISOR_RESPONSE_TIMEOUT_MS);
+    void fetch("/api/ai/advisor", {
+      method: "GET",
+      credentials: "include",
+      signal: controller.signal,
+    }).catch(() => undefined).finally(() => clearTimeout(timeout));
+
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, []);
 
   // Load most recent session or create a new one
   useEffect(() => {
@@ -336,10 +375,8 @@ export default function AIAdvisorPage() {
   };
 
   // Real-time intent detection on input
-  const currentIntent = useMemo(() => detectIntent(input), [input]);
   const detectedIntents = useMemo(() => detectAllIntents(input), [input]);
   const primaryIntent = detectedIntents[0] || null;
-  const _primaryMeta = useMemo(() => getIntentMeta(currentIntent), [currentIntent]);
 
   // ===== VOICE RECORDING =====
   const startRecording = async () => {
@@ -442,6 +479,8 @@ export default function AIAdvisorPage() {
 
   const transcribeAudio = async (audioBlob: Blob) => {
     setLoading(true);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
     try {
       if (audioBlob.size === 0) throw new Error("Recording was empty — please try again.");
       const base64Audio = await blobToBase64(audioBlob);
@@ -449,6 +488,7 @@ export default function AIAdvisorPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
+        signal: controller.signal,
         body: JSON.stringify({ audio: base64Audio, mimeType: audioBlob.type || "audio/webm" }),
       });
       const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
@@ -459,8 +499,12 @@ export default function AIAdvisorPage() {
         alert("Couldn't catch any speech. Please speak clearly and try again.");
       }
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Voice transcription failed. Please try again.");
+      const message = controller.signal.aborted
+        ? "Voice transcription took too long. Please try a shorter recording."
+        : err instanceof Error ? err.message : "Voice transcription failed. Please try again.";
+      alert(message);
     } finally {
+      clearTimeout(timeout);
       setLoading(false);
     }
   };
@@ -518,44 +562,72 @@ export default function AIAdvisorPage() {
         body: JSON.stringify({ message: userMessage.content }),
       }).then(() => loadSessions());
     }
-    const currentInput = input;
     const currentImage = uploadedImage;
+    const currentImageName = uploadedImageName;
     setInput("");
     setUploadedImage(null);
     setUploadedImageName("");
     setLoading(true);
+    setAdvisorStatus("Classifying the legal issues...");
 
-    const intentPrompt = getIntentSystemPrompt(currentInput);
     const compactHistory = messages.slice(-8).map((msg) => ({
       role: msg.role,
       content: msg.content.slice(0, 1200),
     }));
 
+    const requestController = new AbortController();
+    activeAdvisorRequestRef.current?.abort();
+    activeAdvisorRequestRef.current = requestController;
+    let timeoutReason = "";
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    let assistantStarted = false;
+    let streamedText = "";
+    let updateAssistant: ((patch: Partial<Message>) => void) | null = null;
+    const armWatchdog = (timeoutMs: number, reason: string) => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        timeoutReason = reason;
+        requestController.abort();
+      }, timeoutMs);
+    };
+
     try {
+      armWatchdog(
+        ADVISOR_RESPONSE_TIMEOUT_MS,
+        "The Legal Advisor took too long to start. Please try again.",
+      );
       const res = await fetch("/api/ai/advisor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: requestController.signal,
         body: JSON.stringify({
-          message: intentPrompt
-            ? `${intentPrompt}\n\nUSER QUESTION: ${userMessage.content}`
-            : userMessage.content,
+          message: userMessage.content,
           history: compactHistory,
           image: currentImage || undefined,
+          source: "legal-advisor",
         }),
       });
 
-      if (!res.ok || !res.body) throw new Error("Failed to get response");
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "Failed to get response");
+      }
+      if (!res.body) throw new Error("The Legal Advisor returned an empty response.");
+      armWatchdog(
+        ADVISOR_STREAM_IDLE_TIMEOUT_MS,
+        "The Legal Advisor response stopped unexpectedly. Please try again.",
+      );
 
       // Add an empty assistant message that we fill as the stream arrives.
       // It is always the last message, so we patch it by last index.
       setMessages((prev) => [...prev, { role: "assistant", content: "", isUncertain: false, sources: [] }]);
-      const updateLast = (patch: Partial<Message>) =>
+      assistantStarted = true;
+      updateAssistant = (patch: Partial<Message>) =>
         setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? { ...m, ...patch } : m)));
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let full = "";
       let streamError = "";
       let finalSources: GroundingSource[] = [];
 
@@ -563,7 +635,7 @@ export default function AIAdvisorPage() {
       let rafId = 0;
       const flush = () => {
         rafId = 0;
-        updateLast({ content: full });
+        updateAssistant?.({ content: streamedText });
       };
       const scheduleFlush = () => {
         if (rafId === 0) rafId = requestAnimationFrame(flush);
@@ -572,24 +644,31 @@ export default function AIAdvisorPage() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        armWatchdog(
+          ADVISOR_STREAM_IDLE_TIMEOUT_MS,
+          "The Legal Advisor response stopped unexpectedly. Please try again.",
+        );
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          let evt: { type: string; text?: string; error?: string; sources?: GroundingSource[] };
+          let evt: { type: string; text?: string; message?: string; error?: string; sources?: GroundingSource[] };
           try {
             evt = JSON.parse(trimmed);
           } catch {
             continue;
           }
           if (evt.type === "delta" && evt.text) {
-            full += evt.text;
+            setAdvisorStatus("");
+            streamedText += evt.text;
             scheduleFlush();
+          } else if (evt.type === "status" && evt.message) {
+            setAdvisorStatus(evt.message);
           } else if (evt.type === "done") {
             finalSources = Array.isArray(evt.sources) ? evt.sources : [];
-            updateLast({ sources: finalSources });
+            updateAssistant?.({ sources: finalSources });
           } else if (evt.type === "error") {
             streamError = evt.error || "AI response failed.";
           }
@@ -597,15 +676,51 @@ export default function AIAdvisorPage() {
       }
 
       if (rafId !== 0) cancelAnimationFrame(rafId);
-      const finalText = full || streamError || "Sorry, I encountered an error. Please try again.";
-      updateLast({ content: finalText, isUncertain: isUncertainResponse(finalText) });
-      void persistMessage("assistant", finalText, finalSources);
-      void loadSessions();
-    } catch {
-      const errorMsg = "Sorry, I encountered an error. Please try again.";
-      setMessages((prev) => [...prev, { role: "assistant", content: errorMsg }]);
-      void persistMessage("assistant", errorMsg);
+      const finalText = streamError
+        ? [streamedText, streamError].filter(Boolean).join("\n\n")
+        : streamedText || "Sorry, I encountered an error. Please try again.";
+      const technicalFailure = !!streamError || !streamedText;
+      updateAssistant?.({
+        content: finalText,
+        isUncertain: technicalFailure ? false : isUncertainResponse(finalText),
+        isError: technicalFailure,
+      });
+      if (technicalFailure) {
+        setInput(currentImage ? "" : userMessage.content);
+        setUploadedImage(currentImage);
+        setUploadedImageName(currentImageName);
+      } else {
+        void persistMessage("assistant", finalText, finalSources);
+        void loadSessions();
+      }
+    } catch (error) {
+      const errorMsg = timeoutReason || (
+        error instanceof Error && error.message
+          ? error.message
+          : "Sorry, I encountered an error. Please try again."
+      );
+      const finalText = streamedText
+        ? `${streamedText}\n\n${errorMsg}`
+        : errorMsg;
+      if (assistantStarted) {
+        updateAssistant?.({ content: finalText, isUncertain: false, isError: true });
+      } else {
+        setMessages((prev) => [...prev, {
+          role: "assistant",
+          content: finalText,
+          isUncertain: false,
+          isError: true,
+        }]);
+      }
+      setInput(currentImage ? "" : userMessage.content);
+      setUploadedImage(currentImage);
+      setUploadedImageName(currentImageName);
     } finally {
+      if (watchdog) clearTimeout(watchdog);
+      if (activeAdvisorRequestRef.current === requestController) {
+        activeAdvisorRequestRef.current = null;
+      }
+      setAdvisorStatus("");
       setLoading(false);
     }
   };
@@ -614,14 +729,21 @@ export default function AIAdvisorPage() {
   const isUncertainResponse = (text: string): boolean => {
     const patterns = [
       /i('m| am) not sure/i,
-      /consult (a |your )?(qualified |registered )?lawyer/i,
       /i cannot (provide|give|offer)/i,
-      /please (seek|consult|contact).*legal/i,
       /not (entirely |completely )?certain/i,
       /i('m| am) unable to (provide|give|offer) (legal )?advice/i,
     ];
     return patterns.some((p) => p.test(text));
   };
+
+  const renderAssistantText = (text: string): React.ReactNode =>
+    text.split(/(\/(?:[a-z0-9-]+)(?:\/[a-z0-9-]+)*)/gi).map((part, index) =>
+      TAQI_LINK_ROUTES.has(part.toLowerCase()) ? (
+        <Link key={`${part}-${index}`} href={part} className="font-semibold text-primary-400 underline underline-offset-2 hover:text-primary-300">
+          {part}
+        </Link>
+      ) : <span key={index}>{part}</span>
+    );
 
   // S04-02: Render message content with citation block highlighted
   const renderMessageContent = (content: string, isUser: boolean): React.ReactNode => {
@@ -629,7 +751,7 @@ export default function AIAdvisorPage() {
 
     const citationSplit = content.split(/\n(📚 CITATIONS:)/);
     if (citationSplit.length < 2) {
-      return <span className="whitespace-pre-wrap">{content}</span>;
+      return <span className="whitespace-pre-wrap">{renderAssistantText(content)}</span>;
     }
 
     const mainText = citationSplit[0];
@@ -639,7 +761,7 @@ export default function AIAdvisorPage() {
 
     return (
       <>
-        <span className="whitespace-pre-wrap">{mainText}</span>
+        <span className="whitespace-pre-wrap">{renderAssistantText(mainText)}</span>
         <div className="mt-3 pt-2.5" style={{ borderTop: "1px solid var(--border-subtle)" }}>
           <p className="text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-1" style={{ color: "var(--text-tertiary)" }}>
             📚 Citations
@@ -887,7 +1009,7 @@ export default function AIAdvisorPage() {
               messages.map((msg, i) => (
                 <div key={i} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                   {/* S04-05: Uncertainty banner */}
-                  {msg.role === "assistant" && msg.isUncertain && (
+                  {msg.role === "assistant" && msg.isUncertain && !msg.isError && (
                     <div className="max-w-[92%] mb-1 flex items-center gap-1.5 px-2.5 py-1 bg-warning-500/10 border border-warning-500/25 rounded-lg">
                       <AlertTriangle className="h-3 w-3 text-warning-500 flex-shrink-0" />
                       <p className="text-[10px] text-warning-500 font-medium">Uncertain response — please verify with a qualified lawyer</p>
@@ -907,40 +1029,63 @@ export default function AIAdvisorPage() {
                   >
                     {msg.image && (
                       <div className="mb-2">
-                        <img src={msg.image} alt="Uploaded document" className="max-w-[200px] max-h-[200px] rounded-lg border border-white/20 object-cover" />
+                        <Image src={msg.image} alt="Uploaded document" width={200} height={200} unoptimized className="max-w-[200px] max-h-[200px] rounded-lg border border-white/20 object-cover" />
                       </div>
                     )}
-                    <div className="text-sm leading-relaxed">{renderMessageContent(msg.content, msg.role === "user")}</div>
+                    <div className="text-sm leading-relaxed break-words">{renderMessageContent(msg.content, msg.role === "user")}</div>
                   </div>
 
-                  {/* Verified judgments from the corpus that grounded this answer */}
+                  {/* Verified local and official authorities that grounded this answer */}
                   {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
                     <div className="max-w-[92%] mt-1.5 p-2.5 rounded-xl" style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-subtle)" }}>
                       <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1" style={{ color: "var(--text-tertiary)" }}>
-                        <BookOpen className="h-3 w-3 text-success-500" /> Verified from your archive
+                        <BookOpen className="h-3 w-3 text-success-500" /> Verified legal authorities
                       </p>
                       <div className="flex flex-col gap-1">
-                        {msg.sources.map((s) => (
-                          <Link
-                            key={s.id}
-                            href={`/case-law?open=${s.id}&q=${encodeURIComponent(s.citation)}&mode=${s.reported ? "citation" : "keyword"}&court=${encodeURIComponent(s.court)}&year=${s.year}&title=${encodeURIComponent(s.title || "")}&rep=${s.reported ? 1 : 0}`}
-                            className="group flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] transition-all hover:border-success-500/40"
-                            style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)" }}
-                          >
-                            <span className="flex-shrink-0">⚖️</span>
-                            <span className="font-bold font-mono text-success-500">{s.citation}</span>
-                            <span className="truncate" style={{ color: "var(--text-tertiary)" }}>
-                              {s.title ? `· ${s.title}` : ""} · {s.court}{s.year ? ` ${s.year}` : ""}
-                            </span>
-                            <ChevronRight className="h-3 w-3 ml-auto flex-shrink-0 opacity-0 group-hover:opacity-100" style={{ color: "var(--text-tertiary)" }} />
-                          </Link>
-                        ))}
+                        {msg.sources.map((s) => {
+                          const sourceContent = (
+                            <>
+                              <span className="flex-shrink-0">⚖️</span>
+                              <span className="font-bold font-mono text-success-500">{s.citation}</span>
+                              <span className="truncate" style={{ color: "var(--text-tertiary)" }}>
+                                {s.title ? `· ${s.title}` : ""} · {s.court}{s.year ? ` ${s.year}` : ""}
+                              </span>
+                              {s.externalUrl
+                                ? <ExternalLink className="h-3 w-3 ml-auto flex-shrink-0" style={{ color: "var(--text-tertiary)" }} />
+                                : <ChevronRight className="h-3 w-3 ml-auto flex-shrink-0 opacity-0 group-hover:opacity-100" style={{ color: "var(--text-tertiary)" }} />}
+                            </>
+                          );
+                          const sourceClassName = "group flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] transition-all hover:border-success-500/40";
+                          const sourceStyle = { background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)" };
+
+                          return s.externalUrl ? (
+                            <a
+                              key={String(s.id)}
+                              href={s.externalUrl}
+                              target="_blank"
+                              rel="noreferrer noopener"
+                              className={sourceClassName}
+                              style={sourceStyle}
+                            >
+                              {sourceContent}
+                            </a>
+                          ) : (
+                            <Link
+                              key={String(s.id)}
+                              href={`/case-law?open=${s.id}&q=${encodeURIComponent(s.citation)}&mode=${s.reported ? "citation" : "keyword"}&court=${encodeURIComponent(s.court)}&year=${s.year}&title=${encodeURIComponent(s.title || "")}&rep=${s.reported ? 1 : 0}`}
+                              className={sourceClassName}
+                              style={sourceStyle}
+                            >
+                              {sourceContent}
+                            </Link>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
 
                   {/* S04-08: Mandatory disclaimer on every AI response */}
-                  {msg.role === "assistant" && (
+                  {msg.role === "assistant" && !msg.isError && (
                     <div className="max-w-[92%] mt-1 flex items-start gap-1.5 px-2 py-1.5 bg-warning-500/10 border border-warning-500/25 rounded-xl">
                       <span className="text-warning-500 text-[10px] mt-0.5 flex-shrink-0">⚠</span>
                       <p className="text-[10px] leading-tight" style={{ color: "var(--text-secondary)" }}>
@@ -954,11 +1099,12 @@ export default function AIAdvisorPage() {
             )}
             {loading && (messages.length === 0 || messages[messages.length - 1]?.role === "user" || !messages[messages.length - 1]?.content) && (
               <div className="flex justify-start">
-                <div className="rounded-2xl rounded-bl-md px-4 py-3 border" style={{ background: "var(--bg-surface-2)", borderColor: "var(--border-subtle)" }}>
-                  <div className="flex gap-1.5">
-                    <div className="w-2 h-2 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                    <div className="w-2 h-2 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                    <div className="w-2 h-2 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                <div role="status" aria-live="polite" className="rounded-2xl rounded-bl-md px-4 py-3 border" style={{ background: "var(--bg-surface-2)", borderColor: "var(--border-subtle)" }}>
+                  <div className="flex items-center gap-2.5">
+                    <span className="h-2 w-2 rounded-full bg-primary-400 animate-pulse" />
+                    <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                      {advisorStatus || "Preparing a grounded legal answer..."}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -987,12 +1133,12 @@ export default function AIAdvisorPage() {
             {/* Image Preview */}
             {uploadedImage && (
               <div className="mb-2 flex items-center gap-2 p-2 rounded-lg border" style={{ background: "var(--bg-surface-2)", borderColor: "var(--border-subtle)" }}>
-                <img src={uploadedImage} alt="Preview" className="w-12 h-12 rounded-lg object-cover" />
+                <Image src={uploadedImage} alt="Preview" width={48} height={48} unoptimized className="w-12 h-12 rounded-lg object-cover" />
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium truncate" style={{ color: "var(--text-secondary)" }}>{uploadedImageName}</p>
                   <p className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>Document attached</p>
                 </div>
-                <button onClick={removeImage} className="p-1 rounded-lg transition-colors hover:bg-[var(--bg-surface-3)]">
+                <button onClick={removeImage} aria-label="Remove uploaded document" className="grid h-10 w-10 place-items-center rounded-lg transition-colors hover:bg-[var(--bg-surface-3)]">
                   <X className="h-4 w-4" style={{ color: "var(--text-tertiary)" }} />
                 </button>
               </div>
@@ -1054,7 +1200,8 @@ export default function AIAdvisorPage() {
                 <button
                   onClick={startRecording}
                   disabled={loading}
-                  className="flex-shrink-0 p-2.5 rounded-xl border transition-all text-[var(--text-tertiary)] border-[var(--border-default)] bg-[var(--bg-surface-2)] hover:text-primary-400 hover:border-primary-500/40"
+                  aria-label="Record a voice question"
+                  className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl border transition-all text-[var(--text-tertiary)] border-[var(--border-default)] bg-[var(--bg-surface-2)] hover:text-primary-400 hover:border-primary-500/40"
                   title="Voice input"
                 >
                   <Mic className="h-4 w-4" />
@@ -1064,7 +1211,8 @@ export default function AIAdvisorPage() {
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={loading}
-                  className="flex-shrink-0 p-2.5 rounded-xl border text-[var(--text-tertiary)] border-[var(--border-default)] bg-[var(--bg-surface-2)] hover:text-primary-400 hover:border-primary-500/40 transition-all"
+                  aria-label="Upload a legal document image"
+                  className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl border text-[var(--text-tertiary)] border-[var(--border-default)] bg-[var(--bg-surface-2)] hover:text-primary-400 hover:border-primary-500/40 transition-all"
                   title="Upload document photo"
                 >
                   <ImagePlus className="h-4 w-4" />
@@ -1078,19 +1226,26 @@ export default function AIAdvisorPage() {
                 />
 
                 {/* Text Input */}
-                <input
-                  type="text"
+                <textarea
+                  rows={2}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSend();
+                    }
+                  }}
+                  maxLength={MAX_MESSAGE_CHARS}
+                  aria-label="Ask the Legal Advisor"
                   placeholder="Ask about Pakistani law or Taqi AI features..."
-                  className="flex-1 px-4 py-2.5 rounded-xl text-sm border focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500/50 transition-colors"
+                  className="max-h-36 min-h-11 flex-1 resize-y px-4 py-2.5 rounded-xl text-sm border focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500/50 transition-colors"
                   style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", borderColor: "var(--border-default)" }}
                   disabled={loading}
                 />
 
                 {/* Send Button */}
-                <Button onClick={handleSend} disabled={(!input.trim() && !uploadedImage) || loading} size="lg" className="px-4">
+                <Button onClick={handleSend} disabled={(!input.trim() && !uploadedImage) || loading} size="lg" className="px-4" aria-label="Send question">
                   <Send className="h-4 w-4" />
                 </Button>
               </div>

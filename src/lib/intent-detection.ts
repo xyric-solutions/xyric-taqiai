@@ -27,6 +27,8 @@ const intents: Record<string, string[]> = {
     // Legal sections
     "section 302", "section 420", "section 406", "section 379", "section 506",
     "section 324", "section 337", "section 354", "section 376", "section 365",
+    "section 295", "295-a", "295-b", "295-c", "295a", "295b", "295c",
+    "blasphemy", "blasphemy case", "toheen", "toheen mazhab", "asia bibi",
     "PPC", "crpc",
     // Urdu Roman
     "qatl", "chori", "dhoka", "dhamki", "maar peet", "zakhmi",
@@ -108,27 +110,45 @@ const intents: Record<string, string[]> = {
     "bahar jana", "mulk chhorna", "safar", "videsh",
     "shahri", "shehriyat", "gaari passport",
   ],
+  constitutional: [
+    "constitutional", "constitution", "fundamental right", "fundamental rights",
+    "article 199", "article 184", "article 184(3)", "writ", "writ petition",
+    "habeas corpus", "constitutional petition", "judicial review", "public interest litigation",
+    "high court writ", "constitutional bench", "federal constitutional court",
+    "aaeni", "aaini", "buniyadi huqooq", "writ darkhwast",
+  ],
   "non-muslim": [
     // English
     "christian", "hindu", "sikh", "parsi", "zoroastrian", "buddhist", "kalash",
     "minority", "minorities", "non-muslim", "non muslim", "non-muslims",
     "church", "temple", "gurdwara", "mandir",
-    "blasphemy", "forced conversion", "conversion",
+    "forced conversion", "conversion",
     "christmas", "easter", "diwali", "holi", "vaisakhi", "navroz",
     // Acts
     "christian marriage act", "divorce act 1869", "hindu marriage act",
     "parsi marriage", "succession act 1925", "anand karaj",
-    "section 295", "295-a", "295-b", "295-c", "ppc 295", "ppc 298",
+    "ppc 298",
     "evacuee trust", "etpb",
     "article 20", "article 25", "article 36",
     // Urdu Roman
     "isai", "maseehi", "masihi", "ghair muslim", "ghair musalman",
     "aqaliyat", "aqalliyat", "aqliyat", "church", "gireja", "girja",
-    "mandir", "gurdwara", "toheen", "toheen mazhab",
+    "mandir", "gurdwara",
     "jabri tabdeeli", "jabri mazhab", "mazhab tabdeel",
     "minority rights", "aqaliyati huqooq",
-    "asia bibi", "blasphemy case",
   ],
+};
+
+const intentPriority: Record<string, number> = {
+  "non-muslim": 90,
+  constitutional: 80,
+  tax: 70,
+  immigration: 65,
+  corporate: 60,
+  criminal: 50,
+  family: 45,
+  property: 40,
+  civil: 10,
 };
 
 // Drafting trigger words - if ANY of these found, drafting is always included
@@ -142,6 +162,26 @@ const draftingTriggers = [
   "application likh", "petition likh", "darkhwast likh",
   "document bana", "khat likh",
 ];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasKeyword(text: string, keyword: string): boolean {
+  const normalized = keyword.trim().toLowerCase();
+  if (!normalized) return false;
+  const phrase = normalized.split(/\s+/).map(escapeRegExp).join("\\s+");
+  return new RegExp(`(^|[^a-z0-9])${phrase}([^a-z0-9]|$)`, "i").test(text);
+}
+
+function isDraftingRequest(text: string): boolean {
+  const directRequest = /\b(please\s+)?(draft|generate|write)\b(?:\s+(?:this|my|a|an|the|complete|full|legal|court))?/i.test(text);
+  const documentObject = "(?:document|draft|petition|application|plaint|suit|appeal|notice|agreement|contract|deed|affidavit|vakalatnama|case|reply|written statement)";
+  const englishAction = "(?:draft|prepare|create|generate|write|type|make)";
+  const actionWithObject = new RegExp(`\\b${englishAction}\\b.{0,45}\\b${documentObject}\\b|\\b${documentObject}\\b.{0,45}\\b${englishAction}\\b`, "i").test(text);
+  const romanRequest = /\b(likh(?:na|o|\s+do|\s+dein)?|bana(?:na|o|\s+do|\s+dein)?|bna(?:o|\s+do)?|tayyar\s+kar(?:o|na|\s+do|ein)?|type\s+kar(?:o|na|\s+do|ein)?)\b/i.test(text);
+  return directRequest || actionWithObject || romanRequest;
+}
 
 // ============================================
 // DETECTION FUNCTIONS
@@ -164,7 +204,7 @@ export function detectMultiIntent(text: string): {
   const lower = text.toLowerCase();
 
   // Step 1: Check if user is asking for drafting
-  const isDrafting = draftingTriggers.some((trigger) => lower.includes(trigger));
+  const isDrafting = isDraftingRequest(lower);
 
   // Step 2: Find ALL matching categories (except drafting - handled separately)
   const matched: { category: string; count: number; keywords: string[] }[] = [];
@@ -172,9 +212,7 @@ export function detectMultiIntent(text: string): {
   for (const category in intents) {
     if (category === "drafting") continue; // Skip drafting, handled by draftingTriggers
 
-    const matchedWords = intents[category].filter((word) =>
-      lower.includes(word.toLowerCase())
-    );
+    const matchedWords = intents[category].filter((word) => hasKeyword(lower, word));
 
     if (matchedWords.length > 0) {
       matched.push({
@@ -186,7 +224,9 @@ export function detectMultiIntent(text: string): {
   }
 
   // Sort by match count (most specific wins)
-  matched.sort((a, b) => b.count - a.count);
+  matched.sort((a, b) =>
+    b.count - a.count || (intentPriority[b.category] || 0) - (intentPriority[a.category] || 0)
+  );
 
   const allMatched = matched.map((m) => m.category);
   const contextCategory = matched[0]?.category || "general";
@@ -221,7 +261,7 @@ export function detectAllIntents(text: string): DetectedIntent[] {
   // If drafting detected, add it first
   if (multi.isDrafting) {
     const meta = intentMeta.drafting;
-    const matchedWords = draftingTriggers.filter((t) => lower.includes(t));
+    const matchedWords = draftingTriggers.filter((trigger) => hasKeyword(lower, trigger));
     results.push({
       type: "drafting",
       label: meta.label,
@@ -240,9 +280,7 @@ export function detectAllIntents(text: string): DetectedIntent[] {
   for (const category in intents) {
     if (category === "drafting") continue;
 
-    const matchedWords = intents[category].filter((w) =>
-      lower.includes(w.toLowerCase())
-    );
+    const matchedWords = intents[category].filter((word) => hasKeyword(lower, word));
 
     if (matchedWords.length > 0) {
       const meta = intentMeta[category];
@@ -409,6 +447,18 @@ const intentMeta: Record<string, {
       { label: "NOC", labelUrdu: "عدم اعتراض", href: "/affidavits/noc", type: "template" },
     ],
   },
+  constitutional: {
+    label: "Constitutional Law",
+    labelUrdu: "آئینی قانون",
+    color: "purple",
+    laws: ["Constitution of Pakistan 1973", "High Court constitutional jurisdiction", "Federal constitutional jurisdiction"],
+    systemPrompt: "This is a constitutional-law matter. Identify the challenged act, violated right, respondent authority, jurisdiction, standing, alternate remedy, delay, and precise relief. Use only verified current constitutional text and retrieved judgments for exact provisions or authorities.",
+    actions: [
+      { label: "Writ Petition", labelUrdu: "رٹ پٹیشن", href: "/constitutional-law", type: "tool" },
+      { label: "Habeas Corpus", labelUrdu: "حبس بے جا", href: "/constitutional-law", type: "tool" },
+      { label: "Judgment Research", labelUrdu: "عدالتی نظائر", href: "/case-law", type: "tool" },
+    ],
+  },
   "non-muslim": {
     label: "Non-Muslim / Minority Laws",
     labelUrdu: "غیر مسلم / اقلیتی قوانین",
@@ -429,22 +479,7 @@ const intentMeta: Record<string, {
       "Child Marriage Restraint Act 1929",
       "NCHR Act 2012 (National Commission for Human Rights)",
     ],
-    systemPrompt: `This is a NON-MUSLIM / MINORITY LAW matter in Pakistan. You are an expert in all personal laws applicable to non-Muslims in Pakistan.
-
-KEY LAWS YOU MUST KNOW:
-CHRISTIAN: Christian Marriage Act 1872 (Sections 27-31 marriage, Section 60 penalties), Divorce Act 1869 (Section 10 grounds, Section 10-A added grounds, Section 36-37 alimony).
-HINDU: Hindu Marriage Act 2017 (Sections 4-6 conditions, Section 8 registration, Section 12 divorce), Sindh Hindu Marriage Act 2016.
-SIKH: Sikh Anand Karaj Marriage Act 2007/2018.
-PARSI: Parsi Marriage and Divorce Act 1936 (complete marriage & divorce framework).
-SUCCESSION: Succession Act 1925 (Sections 370-390 succession certificate, equal shares for sons & daughters unlike Muslim law).
-GUARDIANSHIP: Guardians & Wards Act 1890 (Section 7, 10, 17 - welfare of child paramount).
-BLASPHEMY DEFENSE: PPC 295-A/B/C - cite Asia Bibi v State (2018 SCMR 1969), Salamat Masih v State (1995).
-FORCED CONVERSION: Article 20 Constitution, PPC 365-B, 371-A. Reference Smt. Reeta Kumari v Province of Sindh.
-MINORITY RIGHTS: Articles 20, 25, 26, 27, 28, 36 Constitution. Supreme Court Suo Motu Case 1/2014.
-PROPERTY: Evacuee Trust Properties Act 1975 for religious property (churches, temples, gurdwaras).
-MAINTENANCE: CrPC Section 488 applies to ALL citizens regardless of religion.
-
-IMPORTANT: Non-Muslim personal law differs significantly from Muslim personal law. Do NOT apply Muslim Family Laws Ordinance 1961 or Dissolution of Muslim Marriages Act 1939 to non-Muslims.`,
+    systemPrompt: `This is a NON-MUSLIM / MINORITY LAW matter in Pakistan. Identify the party's faith, province, marriage or registration regime, forum, and requested relief before selecting the applicable personal law. Do not apply Muslim personal-law statutes to a non-Muslim matter. Mention an exact section or judgment only when it is present in the verified material supplied with the request.`,
     actions: [
       { label: "Christian Marriage", labelUrdu: "مسیحی شادی", href: "/non-muslim-laws/christian-marriage", type: "template" },
       { label: "Christian Divorce", labelUrdu: "مسیحی طلاق", href: "/non-muslim-laws/christian-divorce", type: "template" },

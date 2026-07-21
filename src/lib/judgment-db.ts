@@ -325,7 +325,13 @@ function toResult(r: any, query: string, related = false): JudgmentSearchResult 
     year: r.year || 0,
     title: r.title || null,
     caseNo: r.title ? null : extractCaseNo(r.content),
-    passages: buildPassages(r.content, query),
+    passages: r.search_excerpt
+      ? String(r.search_excerpt)
+          .split("|||")
+          .map((passage) => passage.replace(/\s+/g, " ").trim())
+          .filter((passage) => passage.length >= 40)
+          .slice(0, 4)
+      : buildPassages(r.content, query),
     processed: r.processed,
     related,
   };
@@ -388,6 +394,61 @@ export function searchLocalJudgments(
 
     const rows = db.prepare(sql).all(...params) as any[];
     return dedupeRows(rows, limit, offset).map((r) => toResult(r, query));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Local-first search used by the Legal Advisor. Each query is a focused legal
+ * concept combination (normally 2-3 terms), so FTS5 can return useful reported
+ * authorities in milliseconds without the noisy any-keyword fallback.
+ */
+export function searchAdvisorJudgmentsFast(
+  queries: string[],
+  limit = 12,
+): JudgmentSearchResult[] {
+  try {
+    const db = getDb();
+    if (!db || !hasFts(db)) return [];
+
+    const seen = new Set<string>();
+    const rows: any[] = [];
+    for (const query of Array.from(new Set(queries.map((value) => value.trim()).filter(Boolean))).slice(0, 4)) {
+      if (rows.length >= limit * 2) break;
+      const expression = ftsAllOf(query);
+      if (!expression) continue;
+      const batch = db.prepare(`
+        SELECT j.id, j.citation, j.real_citation, j.court, j.year, j.title, j.processed,
+               substr(j.content, 1, 1200) AS content,
+               snippet(judgments_fts, 0, '', '', ' ||| ', 42) AS search_excerpt,
+               bm25(judgments_fts) AS relevance
+          FROM judgments_fts
+          JOIN judgments j ON j.id = judgments_fts.rowid
+         WHERE judgments_fts MATCH ?
+           AND j.processed = 1
+           AND j.real_citation IS NOT NULL
+         ORDER BY relevance ASC, j.year DESC,
+                  CASE
+                    WHEN j.court LIKE 'Supreme Court%' THEN 0
+                    WHEN j.court LIKE 'Lahore High Court%' THEN 1
+                    WHEN j.court LIKE 'Federal Shariat Court%' THEN 2
+                    WHEN j.court LIKE '%High Court%' THEN 3
+                    ELSE 4
+                  END,
+                  j.id ASC
+         LIMIT ?
+      `).all(expression, Math.max(8, limit)) as any[];
+
+      for (const row of batch) {
+        const key = dedupeKey(row);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push(row);
+      }
+    }
+
+    return rows.slice(0, limit).map((row) => toResult(row, queries.join(" ")));
   } catch {
     return [];
   }

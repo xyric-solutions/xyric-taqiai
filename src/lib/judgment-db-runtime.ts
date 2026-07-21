@@ -13,6 +13,7 @@ import {
   relatedLocalJudgments as relatedLocalJudgmentsSqlite,
   searchLocalJudgments as searchLocalJudgmentsSqlite,
   searchCitationExact as searchCitationExactSqlite,
+  searchAdvisorJudgmentsFast as searchAdvisorJudgmentsFastSqlite,
   searchSectionJudgments as searchSectionJudgmentsSqlite,
   getCitedByCounts as getCitedByCountsSqlite,
   deriveCourtFromContent,
@@ -184,7 +185,14 @@ function toResult(row: any, query: string, related = false): JudgmentSearchResul
     year: Number(row.year || 0),
     title: row.title || null,
     caseNo: row.title ? null : extractCaseNo(content),
-    passages: buildPassages(content, query),
+    passages: row.search_excerpt
+      ? String(row.search_excerpt)
+          .replace(/<\/?b>/gi, "")
+          .split("||| ")
+          .map((passage) => passage.replace(/\s+/g, " ").trim())
+          .filter((passage) => passage.length >= 40)
+          .slice(0, 4)
+      : buildPassages(content, query),
     processed: Number(row.processed || 0),
     related,
   };
@@ -357,6 +365,8 @@ async function searchPg(
       `
         SELECT j.id, j.citation, j.real_citation, j.court, j.year, j.title, j.processed,
                substr(j.content, 1, 4000) AS content,
+               ts_headline('simple', COALESCE(j.content, ''), ${tsq},
+                 'MaxWords=45, MinWords=12, ShortWord=3, MaxFragments=4, FragmentDelimiter=||| ') AS search_excerpt,
                ts_rank_cd(${textVectorSql("j")}, ${tsq}) AS rank
         FROM legal_judgments j
         WHERE ${where.join(" AND ")}
@@ -402,6 +412,43 @@ export async function relatedLocalJudgments(
     if (rows) return rows;
   }
   return relatedLocalJudgmentsSqlite(query, court, year, limit, sort, offset, reportedOnly);
+}
+
+/** Fast, focused retrieval for the Legal Advisor with a local FTS-first path. */
+export async function searchAdvisorJudgmentsFast(
+  queries: string[],
+  limit = 12,
+): Promise<JudgmentSearchResult[]> {
+  if (localSqliteAvailable()) {
+    return searchAdvisorJudgmentsFastSqlite(queries, limit);
+  }
+  if (!shouldUsePostgres()) return [];
+
+  const batches = await Promise.all(
+    queries.slice(0, 2).map((query) =>
+      searchPg(query, undefined, undefined, limit, "relevance", 0, true, false)
+    ),
+  );
+  const seen = new Set<number>();
+  return batches
+    .flatMap((batch) => batch || [])
+    .filter((candidate) => {
+      if (seen.has(candidate.id)) return false;
+      seen.add(candidate.id);
+      return true;
+    })
+    .slice(0, limit);
+}
+
+/** Section retrieval that avoids a remote proxy when the indexed local corpus exists. */
+export async function searchAdvisorSectionJudgments(
+  query: string,
+  limit = 12,
+): Promise<JudgmentSearchResult[]> {
+  if (localSqliteAvailable()) {
+    return searchSectionJudgmentsSqlite(query, undefined, undefined, limit, 0, true);
+  }
+  return searchSectionJudgments(query, undefined, undefined, limit, 0, true);
 }
 
 export async function searchSectionJudgments(
@@ -465,6 +512,8 @@ export async function searchSectionJudgments(
         `
           SELECT j.id, j.citation, j.real_citation, j.court, j.year, j.title, j.processed,
                  substr(j.content, 1, 4000) AS content,
+                 ts_headline('simple', COALESCE(j.content, ''), ${tsq},
+                   'MaxWords=45, MinWords=12, ShortWord=3, MaxFragments=4, FragmentDelimiter=||| ') AS search_excerpt,
                  ts_rank_cd(${textVectorSql("j")}, ${tsq}) AS rank
           FROM legal_judgments j
           WHERE ${where.join(" AND ")}
@@ -574,6 +623,10 @@ export async function getJudgmentDbStats(): Promise<{ total: number; processed: 
 }
 
 export async function getLocalJudgmentById(id: number): Promise<JudgmentRow | null> {
+  if (localSqliteAvailable()) {
+    const local = getLocalJudgmentByIdSqlite(id);
+    if (local) return local;
+  }
   if (shouldUsePostgres()) {
     // Retry several times: a flaky proxy (or a transient Railway pool blip) can
     // drop a connection, and a single failure here otherwise surfaces as a bogus

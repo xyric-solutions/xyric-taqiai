@@ -21,6 +21,7 @@
  *   node scripts/pls-bulk-import-jsonl.mjs ../data/pls_1950_1960_fast_capture.jsonl ../data/pls_1961_1970_fast_capture.jsonl ../data/pls_1971_1980_fast_capture.jsonl
  */
 import fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 import { PrismaClient } from "@prisma/client";
 import {
@@ -33,7 +34,7 @@ import {
 const BATCH = 250;
 
 function parseCli(argv) {
-  const options = { files: [], prefix: "PLS_SCP", dryRun: false };
+  const options = { files: [], prefix: "PLS_SCP", dryRun: false, tailState: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--dry-run") {
@@ -44,6 +45,12 @@ function parseCli(argv) {
       options.prefix = argv[i];
     } else if (arg.startsWith("--prefix=")) {
       options.prefix = arg.slice("--prefix=".length);
+    } else if (arg === "--tail-state") {
+      i += 1;
+      if (i >= argv.length) throw new Error("Missing value after --tail-state");
+      options.tailState = argv[i];
+    } else if (arg.startsWith("--tail-state=")) {
+      options.tailState = arg.slice("--tail-state=".length);
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown argument: ${arg}`);
     } else {
@@ -59,6 +66,7 @@ const CLI = parseCli(process.argv.slice(2));
 const PREFIX = CLI.prefix;
 const FILES = CLI.files;
 const DRY_RUN = CLI.dryRun;
+const TAIL_STATE = CLI.tailState;
 
 const COLS =
   "id, citation, court, year, content, processed, created_at, title, real_citation, " +
@@ -105,16 +113,41 @@ async function withRetry(label, fn, attempts = 6) {
 
 // Read + normalize a JSONL file. Dedup within file by caseTypeId, keep the best
 // content (same rule as the slow importer's bestByCase).
-async function readNormalized(filePath) {
+function readTailState(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return { version: 1, files: {} };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (parsed && typeof parsed === "object" && parsed.files && typeof parsed.files === "object") return parsed;
+  } catch {
+    // A corrupt tail checkpoint should not block import; the existing DB dedup remains authoritative.
+  }
+  return { version: 1, files: {} };
+}
+
+function writeTailState(filePath, state) {
+  if (!filePath) return;
+  fs.mkdirSync(path.dirname(path.resolve(filePath)), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
+  fs.renameSync(tmp, filePath);
+}
+
+async function readNormalized(filePath, startOffset = 0) {
   const bestByCase = new Map();
   let lines = 0;
   let badJson = 0;
   let invalid = 0;
+  let offset = Math.max(0, Number(startOffset || 0));
+  const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
+  if (!stat) return { entries: [], lines, badJson, invalid, startOffset: 0, endOffset: 0, fileSize: 0 };
+  if (offset > stat.size) offset = 0;
+  let processedBytes = 0;
   const rl = readline.createInterface({
-    input: fs.createReadStream(filePath, "utf8"),
+    input: fs.createReadStream(filePath, { encoding: "utf8", start: offset }),
     crlfDelay: Infinity,
   });
   for await (const line of rl) {
+    processedBytes += Buffer.byteLength(line, "utf8") + 1;
     if (!line.trim()) continue;
     lines += 1;
     let record;
@@ -136,7 +169,15 @@ async function readNormalized(filePath) {
       bestByCase.set(n.caseTypeId, n);
     }
   }
-  return { entries: Array.from(bestByCase.values()), lines, badJson, invalid };
+  return {
+    entries: Array.from(bestByCase.values()),
+    lines,
+    badJson,
+    invalid,
+    startOffset: offset,
+    endOffset: Math.min(stat.size, offset + processedBytes),
+    fileSize: stat.size,
+  };
 }
 
 // Build the 16-column row array, matching the slow importer's INSERT exactly.
@@ -172,14 +213,26 @@ async function main() {
   }
   const prisma = new PrismaClient({ log: ["error"] });
   console.log(`Using citation prefix: ${PREFIX}`);
+  if (TAIL_STATE) console.log(`Using incremental tail state: ${TAIL_STATE}`);
   // global dedup set: existing in DB + anything we insert this run
   const already = new Set();
+  const tailState = readTailState(TAIL_STATE);
 
   for (const filePath of FILES) {
+    const fileKey = fs.existsSync(filePath) ? fs.realpathSync(filePath) : filePath;
+    const previousTail = tailState.files[fileKey] || {};
+    const startOffset = TAIL_STATE ? Number(previousTail.offset || 0) : 0;
     console.log(`\n>>> ${filePath}`);
-    const { entries, lines, badJson, invalid } = await readNormalized(filePath);
+    const { entries, lines, badJson, invalid, endOffset, fileSize } = await readNormalized(filePath, startOffset);
+    if (TAIL_STATE) console.log(`  tail: from=${startOffset} to=${endOffset} size=${fileSize}`);
     console.log(`  parsed: lines=${lines} unique=${entries.length} badJson=${badJson} invalid=${invalid}`);
-    if (!entries.length) continue;
+    if (!entries.length) {
+      if (TAIL_STATE && !DRY_RUN) {
+        tailState.files[fileKey] = { offset: endOffset, fileSize, updatedAt: new Date().toISOString(), prefix: PREFIX };
+        writeTailState(TAIL_STATE, tailState);
+      }
+      continue;
+    }
 
     if (DRY_RUN) {
       console.log("  --dry-run: no DB writes");
@@ -241,6 +294,10 @@ async function main() {
       console.log(`  inserted ${inserted}/${toInsert.length}`);
     }
     console.log(`<<< ${filePath}: done, inserted ${inserted}`);
+    if (TAIL_STATE) {
+      tailState.files[fileKey] = { offset: endOffset, fileSize, updatedAt: new Date().toISOString(), prefix: PREFIX };
+      writeTailState(TAIL_STATE, tailState);
+    }
   }
 
   await prisma.$disconnect();

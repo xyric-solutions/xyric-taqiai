@@ -33,10 +33,11 @@ const DEFAULT_MAX_ATTEMPTS = 8;
 const DEFAULT_MAX_EMPTY_ATTEMPTS = 2;
 const DEFAULT_MAX_TRANSIENT_ATTEMPTS = 0;
 const DEFAULT_STALE_MINUTES = 3;
-const DEFAULT_FETCH_TIMEOUT_MS = 60_000;
-const DEFAULT_FETCH_RETRIES = 5;
+const DEFAULT_FETCH_TIMEOUT_MS = 180_000;
+const DEFAULT_FETCH_RETRIES = 8;
 const DEFAULT_SESSION_PAUSE_SECONDS = 120;
 const DEFAULT_SESSION_PAUSE_THRESHOLD = 3;
+const DEFAULT_CHECKPOINT_MS = 5_000;
 const MIN_CONTENT_LENGTH = 500;
 const VERY_SHORT_CONTENT_LENGTH = 80;
 
@@ -67,7 +68,7 @@ function parseArgs(argv) {
     fetchHeadnotes: false,
     resetRunning: true,
     retryBaseSeconds: 45,
-    transientRetryBaseSeconds: 60,
+    transientRetryBaseSeconds: 15,
     postgresCompleted: false,
     postgresSource: "pakistanlawsite",
     sessionPauseSeconds: DEFAULT_SESSION_PAUSE_SECONDS,
@@ -77,6 +78,7 @@ function parseArgs(argv) {
     emptyPauseSeconds: 120,
     emptyPauseThreshold: 25,
     emptyPauseWindowSeconds: 60,
+    checkpointMs: DEFAULT_CHECKPOINT_MS,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -122,6 +124,7 @@ function parseArgs(argv) {
     else if (arg === "--empty-pause-seconds") args.emptyPauseSeconds = Number(next());
     else if (arg === "--empty-pause-threshold") args.emptyPauseThreshold = Number(next());
     else if (arg === "--empty-pause-window-seconds") args.emptyPauseWindowSeconds = Number(next());
+    else if (arg === "--checkpoint-ms") args.checkpointMs = Number(next());
     else if (arg === "--help" || arg === "-h") {
       console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("*/", 1)[0] + "*/");
       process.exit(0);
@@ -153,6 +156,8 @@ function parseArgs(argv) {
   args.staleMinutes = clampInt(args.staleMinutes, 1, 240, DEFAULT_STALE_MINUTES);
   args.fetchTimeoutMs = clampInt(args.fetchTimeoutMs, 10_000, 300_000, DEFAULT_FETCH_TIMEOUT_MS);
   args.fetchRetries = clampInt(args.fetchRetries, 1, 50, DEFAULT_FETCH_RETRIES);
+  args.retryBaseSeconds = clampInt(args.retryBaseSeconds, 1, 3600, 45);
+  args.transientRetryBaseSeconds = clampInt(args.transientRetryBaseSeconds, 1, 300, 15);
   args.sessionPauseSeconds = clampInt(args.sessionPauseSeconds, 30, 3600, DEFAULT_SESSION_PAUSE_SECONDS);
   args.sessionPauseThreshold = clampInt(args.sessionPauseThreshold, 1, 25, DEFAULT_SESSION_PAUSE_THRESHOLD);
   args.transientPauseSeconds = clampInt(args.transientPauseSeconds, 10, 1800, 60);
@@ -160,6 +165,7 @@ function parseArgs(argv) {
   args.emptyPauseSeconds = clampInt(args.emptyPauseSeconds, 10, 1800, 120);
   args.emptyPauseThreshold = clampInt(args.emptyPauseThreshold, 1, 500, 25);
   args.emptyPauseWindowSeconds = clampInt(args.emptyPauseWindowSeconds, 10, 600, 60);
+  args.checkpointMs = clampInt(args.checkpointMs, 250, 60_000, DEFAULT_CHECKPOINT_MS);
 
   if (!args.serve && !args.status && !args.selfTest) args.status = true;
   return args;
@@ -511,7 +517,7 @@ function isSessionFailureReason(reason) {
 }
 
 function isTransientNetworkReason(reason) {
-  return /network|internet|offline|failed to fetch|load failed|timed out|timeout|abort|ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|TLS|connection|ERR_|truncated|response appears truncated/i.test(
+  return /network|internet|offline|failed to fetch|load failed|timed out|timeout|abort|ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|TLS|connection|ERR_|truncated|response appears truncated|citation mismatch|mismatched response|wrong judgment/i.test(
     String(reason || "")
   );
 }
@@ -522,7 +528,7 @@ function contentLengthFromReason(reason) {
 }
 
 function isEffectivelyEmptyContentLength(length) {
-  return length !== null && length <= 5;
+  return length !== null && length < MIN_CONTENT_LENGTH;
 }
 
 function isEffectivelyEmptyReason(reason) {
@@ -536,7 +542,7 @@ function classifyCapture(normalized) {
     if (isTransientNetworkReason(reason)) return { kind: "transient", reason };
     const shortLength = contentLengthFromReason(reason);
     if (isEffectivelyEmptyContentLength(shortLength)) return { kind: "failure", reason };
-    if (shortLength !== null && shortLength < VERY_SHORT_CONTENT_LENGTH) return { kind: "transient", reason };
+    if (shortLength !== null && shortLength < VERY_SHORT_CONTENT_LENGTH) return { kind: "failure", reason };
     return { kind: "failure", reason: reason || "browser fetch failed" };
   }
   if (normalized.validation.ok) return { kind: "ok", reason: "ok" };
@@ -544,7 +550,7 @@ function classifyCapture(normalized) {
   if (isTransientNetworkReason(reason)) return { kind: "transient", reason };
   const shortLength = contentLengthFromReason(reason);
   if (isEffectivelyEmptyContentLength(shortLength)) return { kind: "failure", reason };
-  if (shortLength !== null && shortLength < VERY_SHORT_CONTENT_LENGTH) return { kind: "transient", reason };
+  if (shortLength !== null && shortLength < VERY_SHORT_CONTENT_LENGTH) return { kind: "failure", reason };
   return { kind: "failure", reason };
 }
 
@@ -554,6 +560,12 @@ function retryBackoffSeconds(job, base, cap = 1800) {
   const transientFailures = Math.max(0, Number(job?.transientFailureCount || 0));
   const exponent = Math.min(6, Math.max(attempts, failures, transientFailures));
   return Math.min(cap, base * 2 ** exponent) + Math.floor(Math.random() * 20);
+}
+
+function transientRetryBackoffSeconds(job, base, cap = 300) {
+  const failures = Math.max(1, Number(job?.transientFailureCount || 1));
+  const exponent = Math.min(4, failures - 1);
+  return Math.min(cap, base * 2 ** exponent) + Math.floor(Math.random() * 6);
 }
 
 function ensureDir(filePath) {
@@ -751,6 +763,9 @@ class LocalLedger {
     this.sessionFailureStreak = 0;
     this.transientFailureStreak = 0;
     this.emptyFailureTimes = [];
+    this.saveTimer = null;
+    this.saveDirty = false;
+    this.lastSaveMs = 0;
   }
 
   async load() {
@@ -837,7 +852,7 @@ class LocalLedger {
       }
     }
 
-    this.save();
+    this.save({ immediate: true });
     writeLog(this.args.log, {
       level: "info",
       event: "ledger_loaded",
@@ -851,10 +866,10 @@ class LocalLedger {
     return this;
   }
 
-  save() {
+  checkpointPayload() {
     const jobs = Array.from(this.jobs.values()).sort((a, b) => a.year - b.year || a.rowNo - b.rowNo || a.caseTypeId.localeCompare(b.caseTypeId));
     const checkpointJobs = jobs.filter((job) => (job.status !== "pending" && job.status !== "completed") || job.completedExternally);
-    writeJsonAtomic(this.args.state, {
+    return {
       version: 1,
       updatedAt: new Date().toISOString(),
       years: displayYearLabel(this.args),
@@ -862,7 +877,41 @@ class LocalLedger {
       out: this.args.out,
       totals: this.status({ includeFailures: false }),
       jobs: checkpointJobs,
-    });
+    };
+  }
+
+  saveNow() {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.saveDirty = false;
+    writeJsonAtomic(this.args.state, this.checkpointPayload());
+    this.lastSaveMs = Date.now();
+  }
+
+  save({ immediate = false } = {}) {
+    if (immediate) {
+      this.saveNow();
+      return;
+    }
+    this.saveDirty = true;
+    const elapsed = this.lastSaveMs ? Date.now() - this.lastSaveMs : this.args.checkpointMs;
+    if (elapsed >= this.args.checkpointMs) {
+      this.saveNow();
+      return;
+    }
+    if (!this.saveTimer) {
+      this.saveTimer = setTimeout(() => {
+        this.saveTimer = null;
+        if (this.saveDirty) this.saveNow();
+      }, Math.max(50, this.args.checkpointMs - elapsed));
+      if (typeof this.saveTimer.unref === "function") this.saveTimer.unref();
+    }
+  }
+
+  flushSave() {
+    this.saveNow();
   }
 
   status({ includeFailures = true } = {}) {
@@ -876,6 +925,8 @@ class LocalLedger {
     let avgContentLengthN = 0;
     let firstCompleted = null;
     let lastCompleted = null;
+    let recentCompleted = 0;
+    const recentWindowMs = 5 * 60_000;
     const failures = [];
     for (const job of this.jobs.values()) {
       total += 1;
@@ -890,6 +941,7 @@ class LocalLedger {
         if (completedMs) {
           firstCompleted = firstCompleted === null ? completedMs : Math.min(firstCompleted, completedMs);
           lastCompleted = lastCompleted === null ? completedMs : Math.max(lastCompleted, completedMs);
+          if (now - completedMs <= recentWindowMs) recentCompleted += 1;
         }
       } else if (job.status === "manual_review") {
         manualReview += 1;
@@ -901,7 +953,9 @@ class LocalLedger {
     }
     const elapsedSeconds = firstCompleted && lastCompleted && lastCompleted > firstCompleted ? (lastCompleted - firstCompleted) / 1000 : null;
     const avgPerMinute = elapsedSeconds ? Number(((completed / elapsedSeconds) * 60).toFixed(2)) : null;
-    const etaMinutes = avgPerMinute && avgPerMinute > 0 ? Number((remaining / avgPerMinute).toFixed(1)) : null;
+    const recentPerMinute = Number((recentCompleted / 5).toFixed(2));
+    const etaRate = recentPerMinute > 0 ? recentPerMinute : avgPerMinute;
+    const etaMinutes = etaRate && etaRate > 0 ? Number((remaining / etaRate).toFixed(1)) : null;
     return {
       years: displayYearLabel(this.args),
       total,
@@ -911,6 +965,8 @@ class LocalLedger {
       statuses: counts,
       avgContentLength: avgContentLengthN ? Math.round(avgContentLengthTotal / avgContentLengthN) : 0,
       avgPerMinute,
+      recentPerMinute,
+      recentCompleted5m: recentCompleted,
       etaMinutes,
       out: this.args.out,
       paused: this.isPaused(),
@@ -982,6 +1038,20 @@ class LocalLedger {
       };
     }
     return { ok: true, paused: false, items: this.lease(limit) };
+  }
+
+  heartbeat(record) {
+    const caseTypeId = normSpace(record?.caseTypeId || record?.caseName || record?.case_type_id);
+    const job = this.jobs.get(caseTypeId);
+    if (!job) return { ok: false, status: "not_found", caseTypeId };
+    if (job.status !== "running") {
+      return { ok: true, status: job.status, caseTypeId };
+    }
+    const now = new Date().toISOString();
+    job.leasedAt = now;
+    job.updatedAt = now;
+    this.save();
+    return { ok: true, status: "running", caseTypeId, leasedAt: now };
   }
 
   isPaused() {
@@ -1243,7 +1313,9 @@ class LocalLedger {
           : !isTransient && job.failureCount >= this.args.maxAttempts;
     const status = exhausted ? "manual_review" : "retry";
     const base = isTransient ? this.args.transientRetryBaseSeconds : this.args.retryBaseSeconds;
-    const backoffSeconds = retryBackoffSeconds(job, base, isTransient ? 2400 : 1800);
+    const backoffSeconds = isTransient
+      ? transientRetryBackoffSeconds(job, base, 300)
+      : retryBackoffSeconds(job, base, 1800);
     Object.assign(job, {
       status,
       leaseToken: null,
@@ -1350,6 +1422,13 @@ function runnerScript(args) {
   const FETCH_HEADNOTES = params.has("headnotes") ? params.get("headnotes") !== "0" : DEFAULT_FETCH_HEADNOTES;
   const FETCH_TIMEOUT_MS = Math.max(10000, Math.min(300000, Number(params.get("timeout") || DEFAULT_FETCH_TIMEOUT_MS)));
   const FETCH_RETRIES = Math.max(1, Math.min(50, Number(params.get("fetchRetries") || DEFAULT_FETCH_RETRIES)));
+  const RETRY_BASE_MS = Math.max(250, Math.min(10000, Number(params.get("retryBase") || 1500)));
+  const RETRY_CAP_MS = Math.max(RETRY_BASE_MS, Math.min(60000, Number(params.get("retryCap") || 30000)));
+  const NETWORK_PAUSE_THRESHOLD = Math.max(3, Math.min(100, Number(params.get("networkPauseThreshold") || 20)));
+  const NETWORK_PAUSE_MS = Math.max(5000, Math.min(300000, Number(params.get("networkPauseMs") || 30000)));
+  const HEARTBEAT_MS = Math.max(10000, Math.min(120000, Number(params.get("heartbeatMs") || 30000)));
+  const LOCAL_API_TIMEOUT_MS = Math.max(5000, Math.min(120000, Number(params.get("localTimeout") || 30000)));
+  const SHORT_SKIP_LENGTH = Math.max(0, Math.min(500, Number(params.get("shortSkip") || 500)));
   const SESSION_STOP_THRESHOLD = Math.max(3, Math.min(50, Number(params.get("sessionStop") || Math.max(8, DEFAULT_SESSION_PAUSE_THRESHOLD * 3))));
   const SESSION_PROBE_MS = Math.max(10000, Math.min(300000, Number(params.get("sessionProbeMs") || Math.max(30000, DEFAULT_SESSION_PAUSE_SECONDS * 500))));
   const SESSION_PROBE_MAX = Math.max(1, Math.min(30, Number(params.get("sessionProbeMax") || 5)));
@@ -1368,7 +1447,7 @@ function runnerScript(args) {
     return;
   }
   window.__codexPlsFastRunnerActive = true;
-  const state = { leased: 0, stored: 0, retry: 0, empty: 0, failed: 0, active: 0, stop: false, sessionErrors: 0, sessionPauseUntil: 0, clearQueuesAt: 0, stoppedForSession: false, sessionRecoveryActive: false, recoveryPromise: null };
+  const state = { leased: 0, stored: 0, retry: 0, empty: 0, failed: 0, active: 0, stop: false, sessionErrors: 0, sessionPauseUntil: 0, clearQueuesAt: 0, stoppedForSession: false, sessionRecoveryActive: false, recoveryPromise: null, networkErrors: 0, networkPauseUntil: 0 };
   window.__codexPlsFastRunnerState = state;
 
   function status(text) {
@@ -1383,16 +1462,26 @@ function runnerScript(args) {
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(API + path, {
-      ...options,
-      mode: "cors",
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) }
-    });
-    const text = await res.text();
-    let payload = {};
-    try { payload = text ? JSON.parse(text) : {}; } catch {}
-    if (!res.ok) throw new Error(payload.error || text || "HTTP " + res.status);
-    return payload;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LOCAL_API_TIMEOUT_MS);
+    try {
+      const res = await fetch(API + path, {
+        ...options,
+        mode: "cors",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+      });
+      const text = await res.text();
+      let payload = {};
+      try { payload = text ? JSON.parse(text) : {}; } catch {}
+      if (!res.ok) throw new Error(payload.error || text || "HTTP " + res.status);
+      return payload;
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error("local capture server timed out after " + LOCAL_API_TIMEOUT_MS + "ms");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function apiWithRetry(path, options = {}, label = path) {
@@ -1421,6 +1510,17 @@ function runnerScript(args) {
     return String(value || "").replace(/[^a-z0-9]+/gi, "").toLowerCase();
   }
 
+  function hasMismatchedLeadingCitation(item, content) {
+    const expected = compact(item && item.citation);
+    const leading = compact(String(content || "").slice(0, 12000));
+    if (!expected || !leading || leading.includes(expected)) return false;
+    const year = (expected.match(/(?:18|19|20)\d{2}/) || [""])[0];
+    const page = (expected.match(/\d+$/) || [""])[0];
+    const reporter = expected.replace(year, "").replace(new RegExp(page + "$"), "");
+    if (!year || !page || !reporter) return false;
+    return leading.includes(year + reporter) || leading.includes(reporter + year);
+  }
+
   function looksLikePlsShell(content) {
     const text = String(content || "").slice(0, 60000);
     const signals = [
@@ -1438,6 +1538,40 @@ function runnerScript(args) {
   function isNetworkError(error) {
     const message = String(error && error.message || error || "");
     return /network|internet|offline|failed to fetch|load failed|timed out|timeout|abort|ERR_|AbortError/i.test(message);
+  }
+
+  function isTemporaryPlsError(error) {
+    const message = String(error && error.message || error || "");
+    return isNetworkError(error) || /PLS HTTP (408|425|429|5\d\d)|citation mismatch|mismatched response|wrong judgment/i.test(message);
+  }
+
+  function retryDelayMs(attempt, error) {
+    const retryAfter = Math.max(0, Number(error && error.retryAfterMs || 0));
+    const exponential = Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** Math.min(6, Math.max(0, attempt - 1)));
+    const withJitter = Math.round(exponential * (0.75 + Math.random() * 0.5));
+    return Math.max(retryAfter, withJitter);
+  }
+
+  function recordTemporaryFailure() {
+    state.networkErrors += 1;
+    if (state.networkErrors >= NETWORK_PAUSE_THRESHOLD) {
+      state.networkPauseUntil = Math.max(state.networkPauseUntil || 0, Date.now() + NETWORK_PAUSE_MS);
+      state.networkErrors = 0;
+    }
+  }
+
+  function recordPlsSuccess() {
+    state.networkErrors = 0;
+    state.networkPauseUntil = 0;
+  }
+
+  async function waitForNetworkCooldown(workerId) {
+    while (!state.stop && (navigator.onLine === false || Date.now() < (state.networkPauseUntil || 0))) {
+      const offline = navigator.onLine === false;
+      const remaining = offline ? 5 : Math.max(1, Math.ceil((state.networkPauseUntil - Date.now()) / 1000));
+      status(RUNNER_LABEL + (offline ? " browser is offline" : " PakistanLawSite is temporarily unavailable") + "; worker " + workerId + " retries in " + remaining + "s");
+      await sleep(Math.min(5000, remaining * 1000));
+    }
   }
 
   function shortContentLengthFromMessage(message) {
@@ -1480,6 +1614,13 @@ function runnerScript(args) {
         if (typeof parsed === "string") html = parsed;
       } catch {}
       return { response, raw, html, content: textFromHtml(html) };
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const timeoutError = new Error("PLS request timed out after " + FETCH_TIMEOUT_MS + "ms");
+        timeoutError.name = "TimeoutError";
+        throw timeoutError;
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -1519,9 +1660,12 @@ function runnerScript(args) {
   async function runSessionRecovery(workerId) {
     state.sessionRecoveryActive = true;
     state.clearQueuesAt = Date.now();
-    for (let attempt = 1; attempt <= SESSION_PROBE_MAX && !state.stop; attempt += 1) {
-      const waitMs = attempt === 1 ? 5000 : SESSION_PROBE_MS;
-      status(RUNNER_LABEL + " waiting for PakistanLawSite detail session to recover; probe " + attempt + "/" + SESSION_PROBE_MAX + " in " + Math.ceil(waitMs / 1000) + "s");
+    let attempt = 0;
+    while (!state.stop) {
+      attempt += 1;
+      const cycleAttempt = ((attempt - 1) % SESSION_PROBE_MAX) + 1;
+      const waitMs = attempt === 1 ? 5000 : cycleAttempt === 1 ? Math.min(300000, SESSION_PROBE_MS * 2) : SESSION_PROBE_MS;
+      status(RUNNER_LABEL + " waiting for PakistanLawSite detail session to recover; probe " + cycleAttempt + "/" + SESSION_PROBE_MAX + " in " + Math.ceil(waitMs / 1000) + "s (automatic resume enabled)");
       await sleep(waitMs);
       const probe = await probePlsSession();
       if (probe.ok) {
@@ -1532,12 +1676,9 @@ function runnerScript(args) {
         return true;
       }
       console.warn("PLS session probe failed", probe);
-      status(RUNNER_LABEL + " detail session still unavailable: " + (probe.reason || "probe failed"));
+      status(RUNNER_LABEL + " detail session still unavailable: " + (probe.reason || "probe failed") + "; continuing automatic probes");
     }
     state.sessionRecoveryActive = false;
-    state.stoppedForSession = true;
-    state.stop = true;
-    status(RUNNER_LABEL + " stopped: PakistanLawSite detail endpoint is returning the public/search page. Refresh/login, then paste the runner again. stored this run=" + state.stored);
     return false;
   }
 
@@ -1552,19 +1693,27 @@ function runnerScript(args) {
 
   async function fetchCaseVariant(item, headNotes) {
     const started = Date.now();
-    try {
-      const { response, html, content } = await fetchCaseRaw(item.caseTypeId, headNotes);
-      if (!response.ok) throw new Error("PLS HTTP " + response.status);
-      return { html, content, httpStatus: response.status, elapsedMs: Date.now() - started };
-    } catch (error) {
+    const { response, html, content } = await fetchCaseRaw(item.caseTypeId, headNotes);
+    if (!response.ok) {
+      const error = new Error("PLS HTTP " + response.status);
+      const retryAfter = response.headers.get("Retry-After");
+      if (retryAfter) {
+        const seconds = Number(retryAfter);
+        const dateMs = Date.parse(retryAfter);
+        error.retryAfterMs = Number.isFinite(seconds)
+          ? Math.max(0, seconds * 1000)
+          : Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : 0;
+      }
       throw error;
     }
+    return { html, content, httpStatus: response.status, elapsedMs: Date.now() - started };
   }
 
-  async function getCase(item) {
+  async function getCase(item, workerId) {
     let lastError = null;
     for (let attempt = 1; attempt <= FETCH_RETRIES; attempt += 1) {
       try {
+        await waitForNetworkCooldown(workerId);
         const main = await fetchCaseVariant(item, false);
         let headnoteContent = "";
         if (FETCH_HEADNOTES) {
@@ -1578,6 +1727,10 @@ function runnerScript(args) {
           }
         }
         if (main.content.length < 500) throw new Error("short content length " + main.content.length);
+        if (hasMismatchedLeadingCitation(item, main.content)) {
+          throw new Error("PLS citation mismatch: requested " + item.citation + " but received a different judgment");
+        }
+        recordPlsSuccess();
         return {
           source: "PakistanLawSite fast local runner",
           source_url: location.origin + "/Login/GetCaseFile",
@@ -1601,17 +1754,28 @@ function runnerScript(args) {
         lastError = error;
         const message = String(error && error.message || error);
         const shortLength = shortContentLengthFromMessage(message);
-        if (shortLength !== null && shortLength <= 5) {
-          status(RUNNER_LABEL + " empty PLS response on " + item.caseTypeId + "; reporting for retry/manual review");
+        if (shortLength !== null && SHORT_SKIP_LENGTH > 0 && shortLength < SHORT_SKIP_LENGTH) {
+          status(RUNNER_LABEL + " short PLS response on " + item.caseTypeId + " length=" + shortLength + "; saving and moving on");
           break;
         }
         const offlineHint = navigator.onLine === false ? "; browser reports offline" : "";
-        if (isNetworkError(error)) {
-          status(RUNNER_LABEL + " temporary PLS/network error on " + item.caseTypeId + offlineHint + "; retry " + attempt + "/" + FETCH_RETRIES);
+        const temporary = isTemporaryPlsError(error);
+        if (temporary) {
+          recordTemporaryFailure();
         } else {
-          status(RUNNER_LABEL + " fetch issue on " + item.caseTypeId + ": " + message + "; retry " + attempt + "/" + FETCH_RETRIES);
+          state.networkErrors = 0;
         }
-        if (attempt < FETCH_RETRIES) await sleep(jitter(Math.min(15000, 750 * 2 ** (attempt - 1))));
+        if (attempt < FETCH_RETRIES) {
+          const waitMs = retryDelayMs(attempt, error);
+          if (temporary) {
+            status(RUNNER_LABEL + " temporary PakistanLawSite response issue on " + item.caseTypeId + offlineHint + "; retry " + (attempt + 1) + "/" + FETCH_RETRIES + " in " + Math.ceil(waitMs / 1000) + "s");
+          } else {
+            status(RUNNER_LABEL + " fetch issue on " + item.caseTypeId + ": " + message + "; retry " + (attempt + 1) + "/" + FETCH_RETRIES + " in " + Math.ceil(waitMs / 1000) + "s");
+          }
+          await sleep(waitMs);
+        } else {
+          status(RUNNER_LABEL + " saved " + item.caseTypeId + " for a later automatic retry after " + FETCH_RETRIES + " temporary attempts");
+        }
       }
     }
     return {
@@ -1625,6 +1789,31 @@ function runnerScript(args) {
       error: String(lastError && lastError.message || lastError || "unknown fetch error"),
       stack: String(lastError && lastError.stack || ""),
       scraped_at: new Date().toISOString()
+    };
+  }
+
+  function startLeaseHeartbeat(item) {
+    let stopped = false;
+    let inFlight = false;
+    const beat = async () => {
+      if (stopped || inFlight) return;
+      inFlight = true;
+      try {
+        await api("/heartbeat", {
+          method: "POST",
+          body: JSON.stringify({ caseTypeId: item.caseTypeId })
+        });
+      } catch (error) {
+        console.warn("PLS lease heartbeat failed", item.caseTypeId, error);
+      } finally {
+        inFlight = false;
+      }
+    };
+    beat();
+    const timer = setInterval(beat, HEARTBEAT_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
     };
   }
 
@@ -1673,9 +1862,10 @@ function runnerScript(args) {
         break;
       }
       state.active += 1;
+      const stopHeartbeat = startLeaseHeartbeat(item);
       try {
         status(RUNNER_LABEL + " | active=" + state.active + " leased=" + state.leased + " stored=" + state.stored + " retry=" + state.retry + " empty=" + state.empty + " failed=" + state.failed + " | worker " + workerId + " " + item.caseTypeId);
-        const payload = await getCase(item);
+        const payload = await getCase(item, workerId);
         const result = await apiWithRetry("/capture", { method: "POST", body: JSON.stringify(payload) }, "capture " + item.caseTypeId);
         if (result.status === "session_error") {
           state.retry += 1;
@@ -1684,15 +1874,9 @@ function runnerScript(args) {
           state.sessionPauseUntil = Math.max(state.sessionPauseUntil || 0, serverPause || Date.now() + Math.min(120000, 10000 * state.sessionErrors));
           state.clearQueuesAt = Date.now();
           queue.length = 0;
-          if (state.sessionErrors >= SESSION_STOP_THRESHOLD) {
-            state.stoppedForSession = true;
-            state.stop = true;
-            status(RUNNER_LABEL + " stopped after repeated login/session-looking responses. Refresh/login, then restart runner.");
-          } else {
-            status(RUNNER_LABEL + " saw a login/session-looking response; cooling down and retrying automatically (" + state.sessionErrors + "/" + SESSION_STOP_THRESHOLD + ")");
-            const recovered = await ensureSessionRecovery(workerId);
-            if (!recovered) break;
-          }
+          status(RUNNER_LABEL + " saw a login/session-looking response; cooling down and retrying automatically (" + state.sessionErrors + "/" + SESSION_STOP_THRESHOLD + ")");
+          const recovered = await ensureSessionRecovery(workerId);
+          if (!recovered) break;
         } else if (result.status === "network_error") {
           state.retry += 1;
           if (result.pausedUntil) {
@@ -1725,6 +1909,7 @@ function runnerScript(args) {
           state.failed += 1;
         }
       } finally {
+        stopHeartbeat();
         state.active -= 1;
       }
       if (DELAY_MS > 0) await sleep(DELAY_MS);
@@ -1774,8 +1959,13 @@ function startServer(ledger, args) {
 
       if (req.method === "POST" && url.pathname === "/session-ok") {
         ledger.clearPause("browser session probe succeeded");
-        ledger.save();
+        ledger.save({ immediate: true });
         return sendJson(res, 200, { ok: true });
+      }
+
+      if (req.method === "POST" && url.pathname === "/heartbeat") {
+        const record = await readJsonBody(req, 64 * 1024);
+        return sendJson(res, 200, ledger.heartbeat(record));
       }
 
       if (req.method === "GET" && url.pathname === "/next") {
@@ -1816,7 +2006,7 @@ function startServer(ledger, args) {
 
   process.on("SIGINT", () => {
     console.log("Stopping PLS fast local capture server...");
-    ledger.save();
+    ledger.flushSave();
     server.close();
     process.exit(0);
   });
@@ -1882,6 +2072,9 @@ async function selfTest() {
   const leased = ledger.lease(2);
   assert.equal(leased.length, 2);
   assert.equal(ledger.status().statuses.running, 2);
+  const heartbeat = ledger.heartbeat({ caseTypeId: "1950L1" });
+  assert.equal(heartbeat.ok, true);
+  assert.equal(heartbeat.status, "running");
 
   const longContent = `1950 PLD 1 ${"Judgment text ".repeat(80)}`;
   const saved = ledger.capture({

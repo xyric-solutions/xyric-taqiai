@@ -87,7 +87,7 @@ const CODE_MAP: { re: RegExp; like: string }[] = [
 function excerptForSection(fullText: string, num: string, suffix: string): string | null {
   const numEsc = num.replace(/[.*+?^${}()|[\]\\]/g, "\\");
   // e.g. "302.", "489-F.", "22-A." — allow optional hyphen+letter
-  const re = new RegExp(`(^|[\\s.])${numEsc}\\s*[-]?\\s*${suffix || "[A-Z]?"}\\.?[\\s\\u2014:.-]+[A-Z\\u201c"\\[]`, "g");
+  const re = new RegExp(`(^|[\\s.])(?:\\d+\\[)?${numEsc}\\s*[-]?\\s*${suffix || "[A-Z]?"}\\.?[\\s\\u2014:.-]+[A-Z\\u201c"\\[]`, "g");
   let best = -1;
   let m: RegExpExecArray | null;
   while ((m = re.exec(fullText)) !== null) {
@@ -105,6 +105,8 @@ function excerptForSection(fullText: string, num: string, suffix: string): strin
 // (e.g. "khula maintenance" was matching "Graveyards (Preservation & Maintenance)
 // Act" instead of the Family Courts Act).
 const TOPIC_HINTS: { re: RegExp; like: string; kw: string }[] = [
+  { re: /\b(whatsapp|digital|electronic|audio|voice recording|video recording|electronic evidence)\b/i, like: "%Qanun-e-Shahadat%", kw: "modern devices" },
+  { re: /\b(vehicle|motor vehicle|car)\b.*\b(transfer|ownership|registration|excise)\b|\b(transfer|ownership|registration|excise)\b.*\b(vehicle|motor vehicle|car)\b/i, like: "%Motor Vehicles%", kw: "transfer of ownership" },
   { re: /\bkhula\b/i, like: "%Family Courts%", kw: "khula" },
   { re: /\b(maintenance|nafqa|nan\s*nafqa)\b/i, like: "%Family Courts%", kw: "maintenance" },
   { re: /\b(dower|mehr|haq\s*mehr)\b/i, like: "%Muslim Family Laws%", kw: "dower" },
@@ -132,7 +134,7 @@ function topicHints(question: string): StatuteHit[] {
     .get(hint.like) as any;
   if (!row) return [];
   const t: string = row.full_text || "";
-  const idx = t.toLowerCase().indexOf(hint.kw.toLowerCase());
+  const idx = t.toLowerCase().lastIndexOf(hint.kw.toLowerCase());
   const body = (idx > -1 ? t.slice(Math.max(0, idx - 80), idx + 900) : t.slice(0, 900))
     .replace(/\s+/g, " ")
     .trim();
@@ -153,7 +155,8 @@ function preciseSectionHits(question: string): StatuteHit[] {
   if (!m) return [];
   const num = m[1];
   const suffix = m[2] || "";
-  const isConstitution = /constitution|article/i.test(question);
+  const isConstitution = code.like.includes("Constitution");
+  const isQso = code.like.includes("Qanun-e-Shahadat");
 
   // pick the right Act (biggest full_text matching the code), read its text,
   // and pull the exact section/article excerpt from it.
@@ -171,7 +174,7 @@ function preciseSectionHits(question: string): StatuteHit[] {
       province: row.province || "Federal",
       docType: row.doc_type || "act",
       year: row.act_year ?? null,
-      sectionNo: isConstitution ? `Article ${num}` : `${num}${suffix ? "-" + suffix : ""}`,
+      sectionNo: isConstitution || isQso ? `Article ${num}` : `${num}${suffix ? "-" + suffix : ""}`,
       title: null,
       body,
     },

@@ -10,7 +10,7 @@
 (async function pls1981To1990Resume32957Plus() {
   "use strict";
 
-  const api = "http://127.0.0.1:8782";
+  const api = "http://127.0.0.1:8784";
   const expectedCompletedAtLeast = 32956;
 
   function overlay(message, tone) {
@@ -89,9 +89,9 @@
   runner.async = true;
   runner.src =
     api + "/pls_runner.js"
-      + "?workers=8"
-      + "&batch=4"
-      + "&delay=50"
+      + "?workers=2"
+      + "&batch=1"
+      + "&delay=1200"
       + "&timeout=90000"
       + "&fetchRetries=8"
       + "&sessionStop=20"
@@ -99,7 +99,7 @@
       + "&sessionProbeMax=5"
       + "&force=1"
       + "&t=" + Date.now();
-  runner.onload = () => overlay("PLS 1981-1990 resume runner loaded. Remaining at start=" + remaining, "ok");
+  runner.onload = () => overlay("PLS 1981-1990 stable resume runner loaded. Remaining at start=" + remaining, "ok");
   runner.onerror = () => overlay("Could not load runner from " + runner.src, "error");
   document.documentElement.appendChild(runner);
 })();

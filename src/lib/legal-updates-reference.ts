@@ -17,7 +17,7 @@ export interface LegalUpdate {
 
 export const LEGAL_UPDATES: LegalUpdate[] = [
   {
-    topic: "Green Property Certificate (Punjab) — replacing the Fard",
+    topic: "Green Property Certificate (Punjab)",
     aliases: [
       "green certificate",
       "green property certificate",
@@ -33,15 +33,13 @@ export const LEGAL_UPDATES: LegalUpdate[] = [
     ],
     province: "Punjab",
     summary:
-      "Punjab is replacing the traditional Fard (record of rights) with a digital, forgery-proof Green Property Certificate (GPC) issued by the Punjab Land Records Authority (PLRA). The GPC confirms ownership, possession and legal status of a property and is becoming the SOLE valid document for land-record transactions; the Fard is being abolished and will no longer be accepted as a transaction document.",
+      "The Punjab Land Records Authority describes the Green Property Certificate as an electronically generated ownership document that verifies the legal status, ownership, and possession of land and includes secure verification features.",
     legalBasis:
-      "Punjab PLRA (Management of Land Records) Regulations 2025, framed and notified under sections 14, 15 and 16 of the Punjab Land Records Authority Act, 2017. Fard suspension effected by a Board of Revenue notification (under the Punjab Land Record Authority Rules).",
+      "Official PLRA Green Property Certificate service. Any claim that it replaces another record, or that a transaction is invalid without it, must be checked against the applicable Board of Revenue notification for the district and date concerned.",
     status:
-      "As of mid-2026: pilot in Sahiwal (Fard suspended there from 1 May 2026), extended to Lodhran and Hafizabad from 1 July 2026, with province-wide rollout (incl. Lahore and ~20 major districts) targeted by December 2026. From 1 July 2026, sale/purchase of residential, commercial or agricultural land WITHOUT a valid GPC has no legal standing in the rolled-out districts. GPC fee revised in January 2026 from Rs 700 to Rs 950.",
+      "Available through the PLRA process described on its official website. Current fees, district rollout, and transaction requirements must be confirmed directly with PLRA or the relevant Board of Revenue notification.",
     sources: [
-      "https://www.dawn.com/news/1995916",
-      "https://www.pakistantoday.com.pk/2026/04/29/punjab-to-replace-fard-with-green-property-certificate",
-      "https://www.punjab-zameen.gov.pk/ (PLRA — official)",
+      "https://www.punjab-zameen.gov.pk/gpcinfo",
     ],
   },
   {
@@ -57,13 +55,12 @@ export const LEGAL_UPDATES: LegalUpdate[] = [
     ],
     province: "Federal",
     summary:
-      "The 26th Constitutional Amendment overhauled the judiciary: it removed the Supreme Court's suo motu power, capped the Chief Justice of Pakistan's tenure at 3 years, made Parliament part of appointing the CJP (via a parliamentary committee from a panel of senior judges), reconstituted the Judicial Commission of Pakistan for judges' appointments, and created a separate Constitutional Bench in the Supreme Court to hear constitutional cases.",
+      "The amendment inserted Article 9A and amended multiple constitutional provisions concerning judicial appointments, the Judicial Commission, constitutional benches, court jurisdiction, and related institutional arrangements. Its exact effect on a pending matter must be read from the amended article and any later amendment.",
     legalBasis:
-      "The Constitution (Twenty-sixth Amendment) Act, 2024 — passed by Parliament 20–21 October 2024, presidential assent 21 October 2024. (NOTE: the Constitution PDF in this corpus is consolidated only up to 2018, so it does NOT yet show these changes.)",
+      "The Constitution (Twenty-sixth Amendment) Act, 2024 (Act No. XXVI of 2024), in force from 21 October 2024.",
     status: "In force since 21 October 2024.",
     sources: [
-      "https://en.wikipedia.org/wiki/Twenty-sixth_Amendment_to_the_Constitution_of_Pakistan",
-      "https://na.gov.pk/ (National Assembly — official text)",
+      "https://na.gov.pk/uploads/documents/671f74b8da9e0_263.pdf",
     ],
   },
   {
@@ -80,14 +77,12 @@ export const LEGAL_UPDATES: LegalUpdate[] = [
     ],
     province: "Federal",
     summary:
-      "The 27th Constitutional Amendment created a new Federal Constitutional Court (FCC) — added Articles 175B to 175L — whose decisions bind all other courts INCLUDING the Supreme Court; it changed the process for transferring judges, amended Article 243 (control of the armed forces) creating a Chief of Defence Forces with lifelong constitutional immunities, and revisited provinces' fiscal/administrative autonomy. It is highly controversial — two senior SC judges (Justices Mansoor Ali Shah and Athar Minallah) resigned, and bodies like the ICJ criticised it as undermining judicial independence.",
+      "The amendment created and integrated a Federal Constitutional Court into the constitutional structure and amended provisions concerning constitutional jurisdiction, the judiciary, judicial transfers, and other institutions. Apply its provisions from the official Gazette text, without adding political commentary or inferring effects not stated there.",
     legalBasis:
-      "The Constitution (Twenty-seventh Amendment) Act, 2025 — passed 13 November 2025, presidential assent same period. (NOTE: not reflected in the up-to-2018 Constitution PDF in this corpus.)",
-    status: "In force since November 2025 (most recent constitutional amendment).",
+      "The Constitution (Twenty-seventh Amendment) Act, 2025 (Act No. XXXII of 2025), assented to and published on 13 November 2025.",
+    status: "In force from 13 November 2025, subject to the commencement terms of the official Act.",
     sources: [
-      "https://www.dawn.com/news/1954815",
-      "https://en.wikipedia.org/wiki/Twenty-seventh_Amendment_to_the_Constitution_of_Pakistan",
-      "https://na.gov.pk/ (National Assembly — official text)",
+      "https://na.gov.pk/uploads/documents/691ec19a6a212_270.pdf",
     ],
   },
 ];
@@ -122,7 +117,7 @@ export function legalUpdatesBlock(question: string): string {
     )
     .join("\n\n");
   return `
-VERIFIED RECENT LEGAL REFORM (curated & fact-checked against official reporting — use this; do NOT say you have no information on it):
+VERIFIED RECENT LEGAL REFORM (curated from official sources):
 ${items}
 
 RULE: Answer from the verified facts above and cite the legal basis. For the exact current fee, procedure or district status (which can change), tell the user to confirm on the PLRA / Punjab e-Stamp / Board of Revenue portal — do not guess beyond what is stated.`;
