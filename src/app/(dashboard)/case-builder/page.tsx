@@ -7,10 +7,22 @@ import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import LoadingSpinner from "@/components/ui/LoadingSpinner";
 import {
+  collectCaseBuilderFieldMemory,
+  rememberedAnswerForQuestion,
+  type CaseBuilderFieldMemory,
+} from "@/lib/case-builder-field-memory";
+import {
+  findPriorCaseFormAnswer,
+  resolveCaseFormSchema,
+  type CaseFormCoreField,
+  type CaseFormField,
+} from "@/lib/case-builder-form-schema";
+import { isPlainLanguageCaseName, resolveKnownCaseName } from "@/lib/case-name-provision-resolver";
+import {
   Search, Sparkles, ArrowLeft, Scale, BookOpen,
   ChevronRight, TrendingUp, TrendingDown, Minus,
   FileText, AlertTriangle, Eye, Plus, Trash2, X, HelpCircle,
-  Mic, Square, Loader2,
+  Mic, Square, Loader2, CheckCircle2,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -42,6 +54,12 @@ interface Question {
   required: boolean;
   category?: "mandatory" | "procedural" | "evidence" | "limitation" | "jurisdiction" | "relief" | "optional" | "template";
   source?: "profile" | "template" | "ai";
+}
+
+interface ProvisionAlternative {
+  label: string;
+  sections: string;
+  interpretation: string;
 }
 
 interface IntakeProfileSummary {
@@ -121,7 +139,7 @@ function StanceBadge({ stance }: { stance: PreparedJudgment["stance"] }) {
   );
 }
 
-const WIZARD_STEPS = ["Case", "Confirm", "Details", "Client"];
+const WIZARD_STEPS = ["Case", "Confirm", "Matter", "Filing"];
 
 // Compact 4-step progress indicator shown across the guided input flow.
 function Stepper({ current }: { current: number }) {
@@ -183,6 +201,21 @@ function FilledDetails({ items }: { items: { label: string; value: string }[] })
     </Card>
   );
 }
+
+const QUESTION_SECTION_ORDER: Array<{
+  key: NonNullable<Question["category"]>;
+  title: string;
+  description: string;
+}> = [
+  { key: "mandatory", title: "Core Matter Facts", description: "Facts required to identify and plead this exact matter." },
+  { key: "template", title: "Document-Specific Details", description: "Information required by the selected court document." },
+  { key: "procedural", title: "Procedural History", description: "Current stage, prior orders, and earlier proceedings." },
+  { key: "limitation", title: "Dates and Limitation", description: "Dates that affect filing deadlines or delay." },
+  { key: "jurisdiction", title: "Jurisdiction and Remedies", description: "Forum connection and any alternate remedy already used." },
+  { key: "relief", title: "Relief Required", description: "Final and interim orders requested from the court." },
+  { key: "evidence", title: "Evidence and Documents", description: "Material available to support the case." },
+  { key: "optional", title: "Additional Relevant Details", description: "Useful facts that strengthen this particular matter." },
+];
 
 function isIntentionalBlank(value?: string) {
   return /^(unknown|not known|leave blank|blank|n\/a|na|___|___________)$/i.test((value || "").trim());
@@ -260,6 +293,8 @@ export default function CaseBuilderPage() {
 
   // Input fields — required
   const [sections, setSections] = useState("");
+  const [confirmedSections, setConfirmedSections] = useState("");
+  const [caseRequest, setCaseRequest] = useState("");
   const [facts, setFacts] = useState("");
   const [documentNeeded, setDocumentNeeded] = useState("");
   // Input fields — optional party / case details
@@ -282,10 +317,15 @@ export default function CaseBuilderPage() {
   const [intakeLoading, setIntakeLoading] = useState(false);
   const [sectionInterpretation, setSectionInterpretation] = useState("");
   const [sectionAlternatives, setSectionAlternatives] = useState<string[]>([]);
+  const [provisionAlternatives, setProvisionAlternatives] = useState<ProvisionAlternative[]>([]);
   const [sectionPurpose, setSectionPurpose] = useState("");
   const [intakeQuestions, setIntakeQuestions] = useState<Question[]>([]);
   const [intakeAnswers, setIntakeAnswers] = useState<Record<string, string>>({});
   const [detectedProfile, setDetectedProfile] = useState<IntakeProfileSummary | null>(null);
+  const [caseNameResolved, setCaseNameResolved] = useState(false);
+  const [provisionVerified, setProvisionVerified] = useState(false);
+  const [caseFormAnswers, setCaseFormAnswers] = useState<Record<string, string>>({});
+  const [rememberedCaseFormFieldIds, setRememberedCaseFormFieldIds] = useState<string[]>([]);
 
   // Research results
   const [result, setResult] = useState<ResearchResult | null>(null);
@@ -329,20 +369,29 @@ export default function CaseBuilderPage() {
   const fieldStreamRef = useRef<MediaStream | null>(null);
   const fieldTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const caseFormSchema = resolveCaseFormSchema({
+    profileId: detectedProfile?.id,
+    profileTitle: detectedProfile?.title,
+    matterType: detectedProfile?.matterType,
+    sections,
+    purpose: sectionPurpose,
+    documentNeeded,
+  });
+
   const providedDetails = [
     { label: "Law Sections / Case Type", value: sections },
     { label: "FIR / Case No.", value: firNo },
     { label: "Police Station", value: policeStation },
     { label: "Court Name", value: courtName },
     { label: "District / City", value: districtName },
-    { label: "Client Name", value: clientName },
-    { label: "Client Father Name", value: clientFatherName },
-    { label: "Client CNIC", value: clientCnic },
-    { label: "Client Address", value: clientAddress },
-    { label: "Opponent Name", value: opponentName },
-    { label: "Opponent Father Name", value: opponentFatherName },
-    { label: "Opponent CNIC", value: opponentCnic },
-    { label: "Opponent Address", value: opponentAddress },
+    { label: `${caseFormSchema.clientRole} Name`, value: clientName },
+    { label: `${caseFormSchema.clientRole} Father Name`, value: clientFatherName },
+    { label: `${caseFormSchema.clientRole} CNIC`, value: clientCnic },
+    { label: `${caseFormSchema.clientRole} Address`, value: clientAddress },
+    { label: `${caseFormSchema.opponentRole} Name`, value: opponentName },
+    { label: `${caseFormSchema.opponentRole} Father Name`, value: opponentFatherName },
+    { label: `${caseFormSchema.opponentRole} CNIC`, value: opponentCnic },
+    { label: `${caseFormSchema.opponentRole} Address`, value: opponentAddress },
     { label: "Case Facts", value: facts },
     { label: "Document Needed", value: documentNeeded },
     { label: "Judgment Court Filter", value: court !== "All Courts" ? court : "" },
@@ -352,9 +401,13 @@ export default function CaseBuilderPage() {
   const answerDetails = Object.entries(answers)
     .filter(([, value]) => value?.trim())
     .map(([id, value]) => ({ label: fieldLabel(id), value }));
+  const caseFormDetails = caseFormSchema.groups.flatMap((formGroup) => formGroup.fields)
+    .filter((formField) => !formField.coreField && caseFormAnswers[formField.id]?.trim())
+    .map((formField) => ({ label: formField.label, value: caseFormAnswers[formField.id] }));
 
   const filledDetails = [
     ...providedDetails,
+    ...caseFormDetails,
     ...answerDetails.filter((answer) => !providedDetails.some((item) => item.label === answer.label || item.value === answer.value)),
   ];
 
@@ -368,7 +421,7 @@ export default function CaseBuilderPage() {
   const coreChecks = [
     { label: "Law Sections / Case Type", done: Boolean(sections.trim()) },
     { label: "Case Facts or Matter Purpose", done: Boolean(facts.trim() || sectionPurpose.trim()) },
-    { label: "Client Name", done: Boolean(clientName.trim()) },
+    { label: `${caseFormSchema.clientRole} Name`, done: Boolean(clientName.trim()) },
     { label: "Court Name", done: Boolean(courtName.trim()) || isIntentionalBlank(courtName) },
     { label: "District / City", done: Boolean(districtName.trim()) || isIntentionalBlank(districtName) },
     { label: "Relief / Document Needed", done: Boolean(documentNeeded.trim() || answers.final_relief_sought?.trim() || answers.relief_sought?.trim()) },
@@ -393,6 +446,74 @@ export default function CaseBuilderPage() {
   };
 
   // ── Handlers ──────────────────────────────────────────────────────────────
+
+  const coreCaseFormValues: Record<CaseFormCoreField, string> = {
+    firNo,
+    policeStation,
+    courtName,
+    districtName,
+    clientName,
+    clientFatherName,
+    clientCnic,
+    clientAddress,
+    opponentName,
+    opponentFatherName,
+    opponentCnic,
+    opponentAddress,
+  };
+  const allCaseFormFields = caseFormSchema.groups.flatMap((formGroup) => formGroup.fields);
+  const rememberedCaseFormIds = new Set(rememberedCaseFormFieldIds);
+  const activeCaseFormGroups = caseFormSchema.groups
+    .map((formGroup) => ({
+      ...formGroup,
+      fields: formGroup.fields.filter((formField) => !rememberedCaseFormIds.has(formField.id)),
+    }))
+    .filter((formGroup) => formGroup.fields.length > 0);
+  const rememberedCaseFormItems = allCaseFormFields
+    .filter((formField) => rememberedCaseFormIds.has(formField.id))
+    .map((formField) => ({
+      label: formField.label,
+      value: formField.coreField
+        ? coreCaseFormValues[formField.coreField]
+        : caseFormAnswers[formField.id] || findPriorCaseFormAnswer(formField, intakeQuestions, intakeAnswers),
+    }))
+    .filter((item) => item.value.trim());
+  const intakeQuestionSections = QUESTION_SECTION_ORDER
+    .map((section) => ({
+      ...section,
+      questions: intakeQuestions.filter((question) => (question.category || "mandatory") === section.key),
+    }))
+    .filter((section) => section.questions.length > 0);
+
+  const setCoreCaseFormValue = (coreField: CaseFormCoreField, value: string) => {
+    const setters: Record<CaseFormCoreField, (nextValue: string) => void> = {
+      firNo: setFirNo,
+      policeStation: setPoliceStation,
+      courtName: setCourtName,
+      districtName: setDistrictName,
+      clientName: setClientName,
+      clientFatherName: setClientFatherName,
+      clientCnic: setClientCnic,
+      clientAddress: setClientAddress,
+      opponentName: setOpponentName,
+      opponentFatherName: setOpponentFatherName,
+      opponentCnic: setOpponentCnic,
+      opponentAddress: setOpponentAddress,
+    };
+    setters[coreField](value);
+  };
+
+  const caseFormFieldValue = (formField: CaseFormField) => formField.coreField
+    ? coreCaseFormValues[formField.coreField]
+    : caseFormAnswers[formField.id] || "";
+
+  const updateCaseFormField = (formField: CaseFormField, value: string) => {
+    if (formField.coreField) {
+      setCoreCaseFormValue(formField.coreField, value);
+      return;
+    }
+    setCaseFormAnswers((current) => ({ ...current, [formField.id]: value }));
+  };
 
   useEffect(() => {
     return () => {
@@ -610,6 +731,14 @@ export default function CaseBuilderPage() {
       .map((q) => { const v = intakeAnswers[q.id]?.trim(); return v ? `${q.label}: ${v}` : null; })
       .filter(Boolean) as string[];
     if (qa.length) parts.push(qa.join("\n"));
+    const filingDetails = allCaseFormFields
+      .filter((formField) => !formField.coreField)
+      .map((formField) => {
+        const value = caseFormAnswers[formField.id]?.trim();
+        return value ? `${formField.label}: ${value}` : null;
+      })
+      .filter(Boolean) as string[];
+    if (filingDetails.length) parts.push(filingDetails.join("\n"));
     const missing = intakeQuestions
       .filter((q) => q.required && !questionAnswered(q, intakeAnswers[q.id]))
       .map((q) => q.label);
@@ -619,8 +748,66 @@ export default function CaseBuilderPage() {
     return parts.join("\n");
   };
 
+  const currentFieldMemory = (): CaseBuilderFieldMemory => collectCaseBuilderFieldMemory(
+    [
+      ...intakeQuestions,
+      { id: "case_background", label: "Case background / additional facts" },
+    ],
+    { ...intakeAnswers, case_background: facts },
+    {
+      firNo,
+      policeStation,
+      courtName,
+      districtName,
+      clientName,
+      clientFatherName,
+      clientCnic,
+      clientAddress,
+      opponentName,
+      opponentFatherName,
+      opponentCnic,
+      opponentAddress,
+      caseFacts: facts,
+      documentNeeded,
+    },
+  );
+
+  const applyRememberedFields = (memory: CaseBuilderFieldMemory) => {
+    if (!firNo && memory.firNo) setFirNo(memory.firNo);
+    if (!policeStation && memory.policeStation) setPoliceStation(memory.policeStation);
+    if (!courtName && memory.courtName) setCourtName(memory.courtName);
+    if (!districtName && memory.districtName) setDistrictName(memory.districtName);
+    if (!clientName && memory.clientName) setClientName(memory.clientName);
+    if (!clientFatherName && memory.clientFatherName) setClientFatherName(memory.clientFatherName);
+    if (!clientCnic && memory.clientCnic) setClientCnic(memory.clientCnic);
+    if (!clientAddress && memory.clientAddress) setClientAddress(memory.clientAddress);
+    if (!opponentName && memory.opponentName) setOpponentName(memory.opponentName);
+    if (!opponentFatherName && memory.opponentFatherName) setOpponentFatherName(memory.opponentFatherName);
+    if (!opponentCnic && memory.opponentCnic) setOpponentCnic(memory.opponentCnic);
+    if (!opponentAddress && memory.opponentAddress) setOpponentAddress(memory.opponentAddress);
+  };
+
   const handleContinueFromDetails = () => {
     setError(null);
+    const memory = currentFieldMemory();
+    const resolvedFieldIds: string[] = [];
+    const rememberedAnswers: Record<string, string> = {};
+    applyRememberedFields(memory);
+
+    for (const formField of allCaseFormFields) {
+      const rememberedValue = formField.coreField
+        ? memory[formField.coreField]?.trim() || findPriorCaseFormAnswer(formField, intakeQuestions, intakeAnswers)
+        : findPriorCaseFormAnswer(formField, intakeQuestions, intakeAnswers);
+      if (!rememberedValue) continue;
+      resolvedFieldIds.push(formField.id);
+      rememberedAnswers[formField.id] = rememberedValue;
+      if (formField.coreField && !coreCaseFormValues[formField.coreField]) {
+        setCoreCaseFormValue(formField.coreField, rememberedValue);
+      }
+    }
+
+    setCaseFormAnswers((current) => ({ ...rememberedAnswers, ...current }));
+    setRememberedCaseFormFieldIds(resolvedFieldIds);
     setStage("parties");
   };
 
@@ -686,8 +873,81 @@ export default function CaseBuilderPage() {
   };
 
   // Step 0a: user clicked "Research" — first confirm what the section is about.
+  const renderIntakeQuestion = (question: Question) => (
+    <div key={question.id} className="space-y-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+          {question.label}
+          {question.required && <span className="ml-1" style={{ color: "#f97316" }}>*</span>}
+        </label>
+        {renderFieldMicButton(`intake:${question.id}`, question.label, (text) => appendIntakeAnswer(question.id, text))}
+      </div>
+      <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>Example: {question.placeholder}</p>
+      {isNarrativeQuestion(question) ? (
+        <textarea
+          rows={3}
+          value={intakeAnswers[question.id] || ""}
+          onChange={(event) => setIntakeAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+          placeholder={question.placeholder}
+          className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+          style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+        />
+      ) : (
+        <input
+          type="text"
+          value={intakeAnswers[question.id] || ""}
+          onChange={(event) => setIntakeAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+          placeholder={question.placeholder}
+          className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+          style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+        />
+      )}
+      {(fieldRecordingId === `intake:${question.id}` || fieldTranscribingId === `intake:${question.id}`) && (
+        <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}>
+          {fieldRecordingId === `intake:${question.id}` ? <span className="h-2 w-2 rounded-full bg-danger-500 animate-pulse" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          <span>{fieldRecordingId === `intake:${question.id}` ? `Recording ${formatRecordingTime(fieldRecordSeconds)}` : "Transcribing voice..."}</span>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderCaseFormField = (formField: CaseFormField) => (
+    <div key={formField.id} className={`space-y-1.5 ${formField.width === "full" ? "md:col-span-2" : ""}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+          {formField.label}
+          {formField.required && <span className="ml-1" style={{ color: "#f97316" }}>*</span>}
+        </label>
+        {renderFieldMicButton(`filing:${formField.id}`, formField.label, (text) => updateCaseFormField(formField, text))}
+      </div>
+      <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>{formField.placeholder}</p>
+      {formField.input === "textarea" ? (
+        <textarea
+          rows={3}
+          value={caseFormFieldValue(formField)}
+          onChange={(event) => updateCaseFormField(formField, event.target.value)}
+          placeholder={formField.placeholder}
+          className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+          style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+        />
+      ) : (
+        <input
+          type="text"
+          value={caseFormFieldValue(formField)}
+          onChange={(event) => updateCaseFormField(formField, event.target.value)}
+          placeholder={formField.placeholder}
+          className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+          style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+        />
+      )}
+    </div>
+  );
+
   const handleStartIntake = async () => {
     if (!sections.trim()) { setError("Please enter the law section(s) or case type."); return; }
+    const requestedCase = sections.trim();
+    const localResolution = resolveKnownCaseName(requestedCase);
+    setCaseRequest(requestedCase);
     setError(null);
     setIntakeLoading(true);
     try {
@@ -698,18 +958,66 @@ export default function CaseBuilderPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not read the section");
-      setSectionInterpretation(data.interpretation || "");
-      setSectionAlternatives(Array.isArray(data.alternatives) ? data.alternatives : []);
+      const apiNormalizedSections = String(data.normalizedSections || requestedCase).trim();
+      const apiReturnedRawCaseName = apiNormalizedSections.localeCompare(
+        requestedCase,
+        undefined,
+        { sensitivity: "base" }
+      ) === 0;
+      const useLocalResolution = Boolean(localResolution && apiReturnedRawCaseName);
+      const normalizedSections = useLocalResolution && localResolution
+        ? localResolution.sections
+        : apiNormalizedSections;
+      const interpretation = useLocalResolution && localResolution
+        ? localResolution.interpretation
+        : String(data.interpretation || localResolution?.interpretation || "");
+      const matterSummary = useLocalResolution && localResolution
+        ? localResolution.matterSummary
+        : String(data.matterSummary || localResolution?.matterSummary || interpretation || requestedCase);
+      const alternatives: ProvisionAlternative[] = useLocalResolution && localResolution
+        ? localResolution.alternatives
+        : Array.isArray(data.provisionAlternatives)
+          ? data.provisionAlternatives
+          : localResolution?.alternatives || [];
+      setSections(normalizedSections);
+      setConfirmedSections(normalizedSections);
+      setSectionInterpretation(interpretation);
+      setSectionAlternatives(alternatives.length > 0
+        ? alternatives.map((alternative) => alternative.label)
+        : Array.isArray(data.alternatives) ? data.alternatives : []);
+      setProvisionAlternatives(alternatives);
       setDetectedProfile(data.profile || null);
-      setSectionPurpose(data.interpretation || sections);
+      setCaseNameResolved(Boolean(data.caseNameResolved || useLocalResolution));
+      setProvisionVerified(Boolean(data.provisionVerified || localResolution));
+      setSectionPurpose(matterSummary);
       setStage("confirm");
-    } catch {
-      // If interpretation fails, keep the same wizard order and let the lawyer
-      // confirm the matter in their own words.
-      setSectionInterpretation("");
-      setSectionAlternatives([]);
-      setSectionPurpose(sections);
-      setStage("confirm");
+    } catch (intakeError) {
+      if (localResolution) {
+        setSections(localResolution.sections);
+        setConfirmedSections(localResolution.sections);
+        setSectionInterpretation(localResolution.interpretation);
+        setSectionAlternatives(localResolution.alternatives.map((alternative) => alternative.label));
+        setProvisionAlternatives(localResolution.alternatives);
+        setCaseNameResolved(true);
+        setProvisionVerified(true);
+        setSectionPurpose(localResolution.matterSummary);
+        setDetectedProfile(null);
+        setStage("confirm");
+      } else if (!isPlainLanguageCaseName(requestedCase)) {
+        setSectionInterpretation("");
+        setSectionAlternatives([]);
+        setProvisionAlternatives([]);
+        setCaseNameResolved(false);
+        setProvisionVerified(false);
+        setConfirmedSections(requestedCase);
+        setSectionPurpose(requestedCase);
+        setStage("confirm");
+      } else {
+        setError(intakeError instanceof Error
+          ? intakeError.message
+          : "TaqiAI could not safely identify a verified Pakistani legal provision. Please add more facts and try again.");
+        setStage("input");
+      }
     } finally {
       setIntakeLoading(false);
     }
@@ -720,19 +1028,64 @@ export default function CaseBuilderPage() {
     setError(null);
     setIntakeLoading(true);
     try {
+      const resolvedSections = confirmedSections.trim() || sections.trim();
+      if (!resolvedSections) throw new Error("Please enter the exact legal provision.");
+
+      if (resolvedSections !== sections.trim()) {
+        const interpretRes = await fetch("/api/ai/section-intake", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "interpret", sections: resolvedSections, documentNeeded, language }),
+        });
+        const interpretData = await interpretRes.json();
+        if (!interpretRes.ok) throw new Error(interpretData.error || "Could not verify the corrected provision");
+        const normalizedSections = String(interpretData.normalizedSections || resolvedSections).trim();
+        setSections(normalizedSections);
+        setConfirmedSections(normalizedSections);
+        setSectionInterpretation(interpretData.interpretation || "");
+        setSectionAlternatives(Array.isArray(interpretData.alternatives) ? interpretData.alternatives : []);
+        setProvisionAlternatives(Array.isArray(interpretData.provisionAlternatives) ? interpretData.provisionAlternatives : []);
+        setSectionPurpose(interpretData.matterSummary || interpretData.interpretation || normalizedSections);
+        setDetectedProfile(interpretData.profile || null);
+        setCaseNameResolved(Boolean(interpretData.caseNameResolved));
+        setProvisionVerified(Boolean(interpretData.provisionVerified));
+        setIntakeQuestions([]);
+        setIntakeAnswers({});
+        setResult(null);
+        setQuestions([]);
+        setAnswers({});
+        setGeneratedHtml("");
+        return;
+      }
+
       const res = await fetch("/api/ai/section-intake", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "questions", sections, documentNeeded, purpose: sectionPurpose, facts, language }),
+        body: JSON.stringify({ action: "questions", sections: resolvedSections, documentNeeded, purpose: sectionPurpose, facts, language }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not build questions");
       const qs: Question[] = Array.isArray(data.questions) ? data.questions : [];
-      setIntakeQuestions(qs);
-      setIntakeAnswers({});
+      const memory = currentFieldMemory();
+      const remembered: Record<string, string> = {};
+      const unanswered = qs.filter((question) => {
+        const answer = rememberedAnswerForQuestion(question, memory);
+        if (answer.value) remembered[question.id] = answer.value;
+        return !answer.complete;
+      });
+      setIntakeQuestions(unanswered);
+      setIntakeAnswers(remembered);
+      if (data.normalizedSections) {
+        setSections(String(data.normalizedSections));
+        setConfirmedSections(String(data.normalizedSections));
+      }
       setDetectedProfile(data.profile || detectedProfile);
       setStage("details");
-    } catch {
+    } catch (caughtError) {
+      if ((confirmedSections.trim() || sections.trim()) !== sections.trim()) {
+        setError(caughtError instanceof Error ? caughtError.message : "Could not verify the corrected provision.");
+        return;
+      }
       setIntakeQuestions([]);
       setIntakeAnswers({});
       setStage("details");
@@ -960,7 +1313,12 @@ Client Position: ${result.searchTerms.clientPosition}`;
       const res = await fetch("/api/ai/smart-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "analyze", userRequest: richRequest, language }),
+        body: JSON.stringify({
+          action: "analyze",
+          userRequest: richRequest,
+          documentRequest: resolvedDocumentType || `Legal document for ${sections}`,
+          language,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to analyze request");
@@ -975,50 +1333,27 @@ Client Position: ${result.searchTerms.clientPosition}`;
       setDocumentType(data.documentType || documentNeeded || "Legal Document");
       setSectionWarning(data.sectionWarning || null);
 
-      // Auto-fill answers from first form — so user doesn't re-enter what they already gave
       const autoFilled: Record<string, string> = {};
+      const completedFromMemory = new Set<string>();
+      const memory = currentFieldMemory();
       (data.questions || []).forEach((q: Question) => {
-        const hint = (q.label + " " + q.id).toLowerCase();
-        const clientSide = hint.includes("petitioner") || hint.includes("accused") || hint.includes("applicant") || hint.includes("appellant") || hint.includes("client");
-        const opponentSide = hint.includes("respondent") || hint.includes("opponent") || hint.includes("complainant") || hint.includes("defendant");
-        if (clientFatherName && clientSide && hint.includes("father")) {
-          autoFilled[q.id] = clientFatherName;
-        } else if (clientCnic && clientSide && hint.includes("cnic")) {
-          autoFilled[q.id] = clientCnic;
-        } else if (clientAddress && clientSide && hint.includes("address")) {
-          autoFilled[q.id] = clientAddress;
-        } else if (opponentFatherName && opponentSide && hint.includes("father")) {
-          autoFilled[q.id] = opponentFatherName;
-        } else if (opponentCnic && opponentSide && hint.includes("cnic")) {
-          autoFilled[q.id] = opponentCnic;
-        } else if (opponentAddress && opponentSide && hint.includes("address")) {
-          autoFilled[q.id] = opponentAddress;
-        } else if (clientFatherName && hint.includes("father") && !opponentSide) {
-          autoFilled[q.id] = clientFatherName;
-        } else if (clientCnic && hint.includes("cnic") && !opponentSide) {
-          autoFilled[q.id] = clientCnic;
-        } else if (clientAddress && hint.includes("address") && !opponentSide) {
-          autoFilled[q.id] = clientAddress;
-        } else if (clientName && clientSide) {
-          autoFilled[q.id] = clientName;
-        } else if (opponentName && opponentSide) {
-          autoFilled[q.id] = opponentName;
-        } else if (firNo && (hint.includes("fir") || hint.includes("case no") || hint.includes("case number") || hint.includes("challan"))) {
-          autoFilled[q.id] = firNo;
-        } else if (policeStation && (hint.includes("police station") || hint.includes("police_station") || hint.includes("thana"))) {
-          autoFilled[q.id] = policeStation;
-        } else if (courtName && (hint.includes("court name") || hint.includes("court_name") || hint.includes("court"))) {
-          autoFilled[q.id] = courtName;
-        } else if (districtName && (hint.includes("district") || hint.includes("city") || hint.includes("place"))) {
-          autoFilled[q.id] = districtName;
-        } else if (facts && (hint.includes("fact") || hint.includes("circumstance") || hint.includes("allegation") || hint.includes("background"))) {
-          autoFilled[q.id] = facts;
-        }
+        const remembered = rememberedAnswerForQuestion(q, memory);
+        const matchingFormField = allCaseFormFields.find((formField) =>
+          Boolean(findPriorCaseFormAnswer(formField, [q], { [q.id]: "matched" }))
+        );
+        const caseSpecificValue = matchingFormField
+          ? caseFormFieldValue(matchingFormField).trim()
+          : "";
+        if (remembered.value) autoFilled[q.id] = remembered.value;
+        if (caseSpecificValue) autoFilled[q.id] = caseSpecificValue;
+        if (remembered.complete || caseSpecificValue) completedFromMemory.add(q.id);
       });
 
-      const mergedAnswers = { ...(data.extractedInfo || {}), ...autoFilled };
-      // Only show questions that weren't auto-filled from first form
-      const unanswered = (data.questions || []).filter((q: Question) => !mergedAnswers[q.id]?.trim());
+      const extractedInfo: Record<string, string> = data.extractedInfo || {};
+      const mergedAnswers = { ...autoFilled, ...extractedInfo };
+      const unanswered = (data.questions || []).filter((q: Question) =>
+        !extractedInfo[q.id]?.trim() && !completedFromMemory.has(q.id)
+      );
       setQuestions(unanswered);
       setAnswers(mergedAnswers);
     } catch (err) {
@@ -1071,6 +1406,8 @@ Court heading policy: Use only the provided Court Name and District/City. Never 
 Client Position: ${result.searchTerms.clientPosition}`;
 
     const enrichedAnswers = {
+      ...intakeAnswers,
+      ...caseFormAnswers,
       ...answers,
       ...(usable.length > 0 || adverse.length > 0 ? {
         research_guidance_from_judgments: usable.map((j) => `${j.citation} — ${j.ratio}`).join("; "),
@@ -1087,7 +1424,13 @@ Client Position: ${result.searchTerms.clientPosition}`;
       const res = await fetch("/api/ai/smart-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "generate", userRequest: richRequest, answers: enrichedAnswers, language }),
+        body: JSON.stringify({
+          action: "generate",
+          userRequest: richRequest,
+          documentRequest: resolvedDocumentType || `Legal document for ${sections}`,
+          answers: enrichedAnswers,
+          language,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Generation failed");
@@ -1135,6 +1478,8 @@ Client Position: ${result.searchTerms.clientPosition}`;
     setIntakeQuestions([]);
     setIntakeAnswers({});
     setDetectedProfile(null);
+    setCaseFormAnswers({});
+    setRememberedCaseFormFieldIds([]);
     setDocumentType("");
     setQuestions([]);
     setAnswers({});
@@ -1603,7 +1948,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
           </button>
           <div>
             <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Confirm the Matter</h1>
-            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Confirm what this section is about so the right questions are asked.</p>
+            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Confirm the selected Pakistani law before case-specific questions are prepared.</p>
           </div>
         </div>
 
@@ -1621,9 +1966,35 @@ Client Position: ${result.searchTerms.clientPosition}`;
               <Scale className="h-4 w-4" style={{ color: "#06b6d4" }} />
             </div>
             <div className="space-y-1">
-              <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>You entered</p>
-              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{sections}</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>You asked for</p>
+              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{caseRequest || sections}</p>
+              {caseNameResolved && (
+                <p className="text-xs" style={{ color: "#10b981" }}>
+                  TaqiAI identified the governing law from the case name.
+                </p>
+              )}
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+              {caseNameResolved ? "AI-selected legal provision" : "Exact legal provision"} <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(edit to correct it)</span>
+            </label>
+            <input
+              type="text"
+              value={confirmedSections}
+              onChange={(event) => setConfirmedSections(event.target.value)}
+              placeholder="e.g. Section 376(3) PPC"
+              className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
+              style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
+            />
+            <p className="text-xs" style={{ color: confirmedSections.trim() !== sections.trim() ? "#f59e0b" : "var(--text-tertiary)" }}>
+              {confirmedSections.trim() !== sections.trim()
+                ? "The provision changed. Re-check it before case questions are generated."
+                : provisionVerified
+                  ? "Matched to the Pakistani statute corpus. This provision will remain locked into the case."
+                  : "Confirm this law and section before the case is prepared."}
+            </p>
           </div>
 
           {sectionInterpretation && (
@@ -1646,11 +2017,28 @@ Client Position: ${result.searchTerms.clientPosition}`;
             />
           </div>
 
-          {sectionAlternatives.length > 0 && (
+          {(provisionAlternatives.length > 0 || sectionAlternatives.length > 0) && (
             <div className="space-y-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Or pick one</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Choose a more specific situation</p>
               <div className="flex flex-wrap gap-2">
-                {sectionAlternatives.map((alt) => (
+                {provisionAlternatives.map((alternative) => (
+                  <button
+                    key={`${alternative.label}:${alternative.sections}`}
+                    type="button"
+                    onClick={() => {
+                      setConfirmedSections(alternative.sections);
+                      setSectionPurpose(alternative.interpretation);
+                      setSectionInterpretation(`${alternative.interpretation} Is this the case you want to proceed with?`);
+                    }}
+                    className="px-2.5 py-1 rounded-full text-xs font-medium transition-colors"
+                    style={confirmedSections === alternative.sections
+                      ? { background: "rgba(6,182,212,0.15)", color: "#06b6d4", border: "1px solid rgba(6,182,212,0.3)" }
+                      : { background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-subtle)" }}
+                  >
+                    {alternative.label}
+                  </button>
+                ))}
+                {provisionAlternatives.length === 0 && sectionAlternatives.map((alt) => (
                   <button
                     key={alt}
                     type="button"
@@ -1667,9 +2055,13 @@ Client Position: ${result.searchTerms.clientPosition}`;
             </div>
           )}
 
-          <Button onClick={handleConfirmPurpose} disabled={intakeLoading || !sectionPurpose.trim()} className="w-full flex items-center justify-center gap-2">
+          <Button onClick={handleConfirmPurpose} disabled={intakeLoading || !sectionPurpose.trim() || !confirmedSections.trim()} className="w-full flex items-center justify-center gap-2">
             <Sparkles className="h-4 w-4" />
-            {intakeLoading ? "Preparing questions…" : "Yes, ask the related questions"}
+            {intakeLoading
+              ? "Checking provision…"
+              : confirmedSections.trim() !== sections.trim()
+                ? "Re-check corrected provision"
+                : "Yes, ask the related questions"}
           </Button>
           <button
             type="button"
@@ -1678,7 +2070,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
               setIntakeAnswers({});
               setStage("details");
             }}
-            disabled={intakeLoading}
+            disabled={intakeLoading || confirmedSections.trim() !== sections.trim()}
             className="w-full text-center text-xs font-medium"
             style={{ color: "var(--text-tertiary)" }}
           >
@@ -1692,14 +2084,16 @@ Client Position: ${result.searchTerms.clientPosition}`;
   // Case Details: background facts first, with optional section-specific questions.
   if (stage === "details") {
     return (
-      <div className="max-w-2xl mx-auto space-y-6">
+      <div className="max-w-3xl mx-auto space-y-6">
         <Stepper current={3} />
         <div className="flex items-center gap-3">
           <button onClick={() => setStage("confirm")} style={{ color: "var(--text-tertiary)" }}>
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div>
-            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Case Details</h1>
+            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>
+              {detectedProfile?.title || caseFormSchema.title}
+            </h1>
             <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
               {intakeQuestions.length > 0
                 ? `${intakeQuestions.length} matter-specific question${intakeQuestions.length !== 1 ? "s" : ""}. Fill what you know, leave the rest blank.`
@@ -1775,47 +2169,29 @@ Client Position: ${result.searchTerms.clientPosition}`;
             </div>
           )}
 
-          {intakeQuestions.map((q) => (
-            <div key={q.id} className="space-y-1.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-                  {q.label}
-                </label>
-                {renderFieldMicButton(`intake:${q.id}`, q.label, (text) => appendIntakeAnswer(q.id, text))}
-              </div>
-              <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-                Example format: {q.placeholder}
-              </p>
-              {isNarrativeQuestion(q) ? (
-                <textarea
-                  rows={3}
-                  value={intakeAnswers[q.id] || ""}
-                  onChange={(e) => setIntakeAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
-                  placeholder={q.placeholder}
-                  className="w-full rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              ) : (
-                <input
-                  type="text"
-                  value={intakeAnswers[q.id] || ""}
-                  onChange={(e) => setIntakeAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
-                  placeholder={q.placeholder}
-                  className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
-                  style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
-                />
-              )}
-              {(fieldRecordingId === `intake:${q.id}` || fieldTranscribingId === `intake:${q.id}`) && (
-                <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}>
-                  {fieldRecordingId === `intake:${q.id}` ? <span className="h-2 w-2 rounded-full bg-danger-500 animate-pulse" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  <span>{fieldRecordingId === `intake:${q.id}` ? `Recording ${formatRecordingTime(fieldRecordSeconds)}` : "Transcribing voice..."}</span>
+          {intakeQuestionSections.map((section, sectionIndex) => (
+            <section
+              key={section.key}
+              className={sectionIndex > 0 ? "border-t pt-5" : ""}
+              style={{ borderColor: "var(--border-subtle)" }}
+            >
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{section.title}</h2>
+                  <p className="mt-1 text-xs" style={{ color: "var(--text-tertiary)" }}>{section.description}</p>
                 </div>
-              )}
-            </div>
+                <span className="rounded-md px-2 py-1 text-[11px] font-semibold" style={{ background: "var(--bg-surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border-subtle)" }}>
+                  {section.questions.length}
+                </span>
+              </div>
+              <div className="space-y-4">
+                {section.questions.map(renderIntakeQuestion)}
+              </div>
+            </section>
           ))}
 
           <Button onClick={handleContinueFromDetails} className="w-full flex items-center justify-center gap-2">
-            Continue to Client Information, blanks are okay
+            Continue to {caseFormSchema.title}, blanks are okay
             <ChevronRight className="h-4 w-4" />
           </Button>
         </Card>
@@ -1826,15 +2202,20 @@ Client Position: ${result.searchTerms.clientPosition}`;
   // Parties & court heading details (step 4)
   if (stage === "parties") {
     return (
-      <div className="max-w-2xl mx-auto space-y-6">
+      <div className="max-w-3xl mx-auto space-y-6">
         <Stepper current={4} />
         <div className="flex items-center gap-3">
           <button onClick={() => setStage("details")} style={{ color: "var(--text-tertiary)" }}>
             <ArrowLeft className="h-5 w-5" />
           </button>
-          <div>
-            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>Client Information</h1>
-            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Add party, opponent, and court details. Blank fields become ___ in the draft.</p>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>{caseFormSchema.title}</h1>
+              <span className="rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide" style={{ background: "rgba(249,115,22,0.1)", color: "#f97316", border: "1px solid rgba(249,115,22,0.22)" }}>
+                {detectedProfile?.title || caseFormSchema.kind}
+              </span>
+            </div>
+            <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>{caseFormSchema.description} Blank fields remain blank in the draft.</p>
           </div>
         </div>
 
@@ -1845,83 +2226,39 @@ Client Position: ${result.searchTerms.clientPosition}`;
         )}
 
         <Card className="p-6 space-y-6">
-          {/* Court & case number */}
-          <div>
-            <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Court &amp; Case No.</p>
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>FIR / Case No.</label>
-                  <input type="text" value={firNo} onChange={(e) => setFirNo(e.target.value)} placeholder="e.g. 123/2024 or Crl. A. 45/2023" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Police Station</label>
-                  <input type="text" value={policeStation} onChange={(e) => setPoliceStation(e.target.value)} placeholder="e.g. PS City, Faisalabad" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
+          {rememberedCaseFormItems.length > 0 && (
+            <div className="rounded-lg p-4" style={{ background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.2)" }}>
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4" style={{ color: "#10b981" }} />
+                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Already provided</p>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Court Name <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(for heading)</span></label>
-                  <input type="text" value={courtName} onChange={(e) => setCourtName(e.target.value)} placeholder="e.g. Court of Sessions Judge" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>District / City <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(for heading)</span></label>
-                  <input type="text" value={districtName} onChange={(e) => setDistrictName(e.target.value)} placeholder="e.g. Faisalabad / Multan / Sahiwal" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
+              <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>These details were carried forward and will not be requested again.</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {rememberedCaseFormItems.map((item) => (
+                  <div key={`${item.label}:${item.value}`} className="rounded-md px-3 py-2" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)" }}>
+                    <p className="text-[11px] font-medium" style={{ color: "var(--text-tertiary)" }}>{item.label}</p>
+                    <p className="truncate text-sm" style={{ color: "var(--text-primary)" }}>{item.value}</p>
+                  </div>
+                ))}
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Parties */}
-          <div>
-            <p className="text-[11px] font-bold uppercase tracking-widest mb-3 pb-1.5" style={{ color: "var(--text-tertiary)", borderBottom: "1px solid var(--border-subtle)" }}>Parties</p>
-            <div className="space-y-3">
-              <div className="grid gap-3 md:grid-cols-2">
-                <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Client / Petitioner / Accused</p>
-                <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-tertiary)" }}>Opponent / Respondent / Complainant</p>
+          {activeCaseFormGroups.map((formGroup, groupIndex) => (
+            <section
+              key={formGroup.id}
+              className={groupIndex > 0 || rememberedCaseFormItems.length > 0 ? "border-t pt-5" : ""}
+              style={{ borderColor: "var(--border-subtle)" }}
+            >
+              <div className="mb-4">
+                <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{formGroup.title}</h2>
+                <p className="mt-1 text-xs" style={{ color: "var(--text-tertiary)" }}>{formGroup.description}</p>
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Name</label>
-                  <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="e.g. Muhammad Aslam" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Name</label>
-                  <input type="text" value={opponentName} onChange={(e) => setOpponentName(e.target.value)} placeholder="e.g. State / Tariq Mehmood" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                {formGroup.fields.map(renderCaseFormField)}
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Father Name</label>
-                  <input type="text" value={clientFatherName} onChange={(e) => setClientFatherName(e.target.value)} placeholder="e.g. Muhammad Ali" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Father Name</label>
-                  <input type="text" value={opponentFatherName} onChange={(e) => setOpponentFatherName(e.target.value)} placeholder="e.g. Muhammad Yousaf" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>CNIC</label>
-                  <input type="text" value={clientCnic} onChange={(e) => setClientCnic(e.target.value)} placeholder="e.g. 35201-1234567-1" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>CNIC</label>
-                  <input type="text" value={opponentCnic} onChange={(e) => setOpponentCnic(e.target.value)} placeholder="e.g. 35202-1234567-1" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Address</label>
-                  <input type="text" value={clientAddress} onChange={(e) => setClientAddress(e.target.value)} placeholder="e.g. House 12, Civil Lines, Faisalabad" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium" style={{ color: "var(--text-primary)" }}>Address</label>
-                  <input type="text" value={opponentAddress} onChange={(e) => setOpponentAddress(e.target.value)} placeholder="e.g. House 20, Cantt Road, Multan" className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }} />
-                </div>
-              </div>
-            </div>
-          </div>
+            </section>
+          ))}
 
           {/* Search scope */}
           <div>
@@ -1943,8 +2280,8 @@ Client Position: ${result.searchTerms.clientPosition}`;
 
           <button
             onClick={() => void handleResearch()}
-            className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all"
-            style={{ background: "linear-gradient(135deg, #06b6d4, #7c3aed)", color: "white", boxShadow: "0 0 20px rgba(6,182,212,0.3)" }}
+            className="w-full flex items-center justify-center gap-2 py-3 rounded-lg text-sm font-semibold transition-colors"
+            style={{ background: "#f97316", color: "#080c10" }}
           >
             <Search className="h-4 w-4" />
             Research Judgments &amp; Build Case
@@ -2030,18 +2367,18 @@ Client Position: ${result.searchTerms.clientPosition}`;
         {/* ── Law sections / case type ── */}
         <div className="space-y-1.5">
           <label className="block text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-            Law Section(s) / Case Type <span style={{ color: "#ef4444" }}>*</span>
+            Law Section(s) or Case Name <span style={{ color: "#ef4444" }}>*</span>
           </label>
           <input
             type="text"
             value={sections}
             onChange={(e) => setSections(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && sections.trim() && !intakeLoading) void handleStartIntake(); }}
-            placeholder="e.g. 489-F PPC / 497 CrPC / custody / maintenance / car theft"
+            placeholder="e.g. Murder Case / Child Rape Case / Woman Harassment / 489-F PPC"
             className="w-full rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary-500/50"
             style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border-default)", color: "var(--text-primary)" }}
           />
-          <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>Use sections with law name, or a short case type if the section is not known.</p>
+          <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>Enter a case name in plain language. TaqiAI will identify the relevant Pakistani law and sections for confirmation.</p>
         </div>
 
         {/* ── Document needed ── */}
@@ -2096,7 +2433,7 @@ Client Position: ${result.searchTerms.clientPosition}`;
             boxShadow: sections.trim() ? "0 0 20px rgba(6,182,212,0.3)" : "none",
           }}
         >
-          {intakeLoading ? "Reading section…" : "Continue"}
+          {intakeLoading ? "Identifying applicable law…" : "Continue"}
           {!intakeLoading && <ChevronRight className="h-4 w-4" />}
         </button>
       </Card>

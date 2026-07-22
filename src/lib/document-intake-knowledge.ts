@@ -39,11 +39,19 @@ export interface DocumentIntakeInput {
   userRequest?: string;
 }
 
+export const MAX_DOCUMENT_CLASSIFICATION_LENGTH = 1000;
+
 export function resolvePrimaryDocumentRequest(documentRequest: unknown, userRequest: string): string {
-  if (typeof documentRequest === "string" && documentRequest.trim()) {
-    return documentRequest.trim();
+  const candidate = typeof documentRequest === "string" && documentRequest.trim()
+    ? documentRequest.trim()
+    : userRequest.trim();
+  if (candidate.length <= MAX_DOCUMENT_CLASSIFICATION_LENGTH) return candidate;
+
+  const firstParagraph = candidate.split(/\n\s*\n/, 1)[0].trim();
+  if (firstParagraph && firstParagraph.length <= MAX_DOCUMENT_CLASSIFICATION_LENGTH) {
+    return firstParagraph;
   }
-  return userRequest.trim();
+  return candidate.slice(0, MAX_DOCUMENT_CLASSIFICATION_LENGTH).trimEnd();
 }
 
 export function filterDocumentIntakeValues(

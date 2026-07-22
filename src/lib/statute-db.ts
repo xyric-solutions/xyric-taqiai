@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any */
 import path from "path";
 import fs from "fs";
+import { extractSubsectionText, parseLegalProvisionReference } from "@/lib/legal-provision-reference";
 
 // Built offline by the Python scrapers (scrape_*_statutes.py) + an FTS5 index
 // from scripts/build_statute_fts.py. Holds the LATEST statute text — federal +
@@ -73,6 +74,7 @@ const CODE_MAP: { re: RegExp; like: string }[] = [
   { re: /\b(crpc|cr\.?p\.?c)\b|criminal\s+procedure/i, like: "%Criminal Procedure%" },
   { re: /\b(cpc|c\.p\.c)\b|civil\s+procedure/i, like: "%Civil Procedure%" },
   { re: /\b(qso)\b|qanun-?e-?shahadat/i, like: "%Qanun-e-Shahadat%" },
+  { re: /\bpeca\b|prevention\s+of\s+electronic\s+crimes/i, like: "%Prevention of Electronic Crimes%" },
   { re: /\bconstitution\b|\barticle\b/i, like: "%Constitution of the Islamic%" },
 ];
 
@@ -85,9 +87,12 @@ const CODE_MAP: { re: RegExp; like: string }[] = [
  *  Section headings appear twice (contents list + body); the body occurrence is
  *  the one followed by the most text, so we take the last/longest match. */
 function excerptForSection(fullText: string, num: string, suffix: string): string | null {
-  const numEsc = num.replace(/[.*+?^${}()|[\]\\]/g, "\\");
+  const numEsc = num.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const suffixPattern = suffix
+    ? `\\s*[-]?\\s*${suffix}(?![A-Z])`
+    : `(?!\\s*[-]?\\s*[A-Z])`;
   // e.g. "302.", "489-F.", "22-A." — allow optional hyphen+letter
-  const re = new RegExp(`(^|[\\s.])(?:\\d+\\[)?${numEsc}\\s*[-]?\\s*${suffix || "[A-Z]?"}\\.?[\\s\\u2014:.-]+[A-Z\\u201c"\\[]`, "g");
+  const re = new RegExp(`(^|[\\s.])(?:\\d+\\[)?${numEsc}${suffixPattern}\\.?[\\s\\u2014:.-]+[A-Z\\u201c"\\[]`, "g");
   let best = -1;
   let m: RegExpExecArray | null;
   while ((m = re.exec(fullText)) !== null) {
@@ -151,12 +156,13 @@ function preciseSectionHits(question: string): StatuteHit[] {
   if (!db) return [];
   const code = CODE_MAP.find((c) => c.re.test(question));
   if (!code) return [];
-  const m = question.match(/\b(\d{1,4})\s*[-]?\s*([A-Z])?\b/);
-  if (!m) return [];
-  const num = m[1];
-  const suffix = m[2] || "";
+  const reference = parseLegalProvisionReference(question);
+  if (!reference) return [];
+  const provisionMatch = reference.provision.match(/^(\d{1,4})(?:-?([A-Z]{1,3}))?$/);
+  if (!provisionMatch) return [];
+  const num = provisionMatch[1];
+  const suffix = provisionMatch[2] || "";
   const isConstitution = code.like.includes("Constitution");
-  const isQso = code.like.includes("Qanun-e-Shahadat");
 
   // pick the right Act (biggest full_text matching the code), read its text,
   // and pull the exact section/article excerpt from it.
@@ -165,8 +171,9 @@ function preciseSectionHits(question: string): StatuteHit[] {
     : db.prepare(`SELECT id, act_name, full_text, act_year, COALESCE(province,'Federal') province, COALESCE(doc_type,'act') doc_type FROM acts WHERE act_name LIKE ? AND full_text IS NOT NULL ORDER BY length(full_text) DESC LIMIT 1`).get(code.like)) as any;
   if (!row) return [];
 
-  const body = excerptForSection(row.full_text || "", num, suffix);
-  if (!body) return [];
+  const sectionBody = excerptForSection(row.full_text || "", num, suffix);
+  if (!sectionBody) return [];
+  const body = extractSubsectionText(sectionBody, reference.subsections);
   return [
     {
       actId: row.id,
@@ -174,7 +181,7 @@ function preciseSectionHits(question: string): StatuteHit[] {
       province: row.province || "Federal",
       docType: row.doc_type || "act",
       year: row.act_year ?? null,
-      sectionNo: isConstitution || isQso ? `Article ${num}` : `${num}${suffix ? "-" + suffix : ""}`,
+      sectionNo: reference.canonical.replace(/^(?:Section|Article)\s+/i, ""),
       title: null,
       body,
     },

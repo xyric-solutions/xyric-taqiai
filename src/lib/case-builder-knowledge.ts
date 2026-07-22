@@ -368,7 +368,17 @@ const profiles: ProfileWithPatterns[] = [
     sectionRefs: ["Sections 8, 9, 42, 54 Specific Relief Act, 1877", "CPC"],
     searchTerms: ["declaration", "injunction", "possession", "Specific Relief Act"],
     clientPosition: "petitioner",
-    patterns: [/\binjunction\b/i, /\bdeclaration\b/i, /\bpossession\b/i, /\bqabza\b/i, /\bproperty dispute\b/i, /\bstay order\b/i],
+    patterns: [
+      /\binjunction\b/i,
+      /\bdeclaration\b/i,
+      /\bpossession\b/i,
+      /\bqabza\b/i,
+      /\bproperty dispute\b/i,
+      /\bstay order\b/i,
+      /\bspecific relief act\b/i,
+      /\btransfer of property act\b/i,
+      /\b(?:property|land|house|plot|share)\b.*\b(?:sold|sale|transfer(?:red)?|alienat(?:e|ed|ion))\b.*\b(?:without|no)\b.*\b(?:permission|consent|authority)\b/i,
+    ],
     ingredients: [
       "Plaintiff's right, title, or possession is pleaded.",
       "Threat, interference, dispossession, or denial of title is stated.",
