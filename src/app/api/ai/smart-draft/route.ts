@@ -839,9 +839,6 @@ export async function POST(request: NextRequest) {
 
     const requestCategory = typeof category === "string" ? category : undefined;
     const primaryDocumentRequest = resolvePrimaryDocumentRequest(documentRequest, userRequest);
-    if (primaryDocumentRequest.length > 1000) {
-      return NextResponse.json({ error: "Document type request is too long (max 1000 characters)" }, { status: 400 });
-    }
     const structuredProfile = findDocumentIntakeProfile({ category: requestCategory, userRequest: primaryDocumentRequest });
     const matchedTemplate = findMatchingDocumentTemplate(primaryDocumentRequest, requestCategory, structuredProfile);
     const templateQuestions = buildTemplateQuestions(matchedTemplate, language || "en");

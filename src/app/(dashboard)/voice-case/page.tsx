@@ -68,7 +68,13 @@ export default function VoiceCasePage() {
       const res = await fetch("/api/ai/smart-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "generate", userRequest, answers: {}, language }),
+        body: JSON.stringify({
+          action: "generate",
+          userRequest,
+          documentRequest: analysis.suggestedDocument || "Legal document from client discussion",
+          answers: {},
+          language,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Document generation failed");

@@ -2,6 +2,7 @@
 import fs from "fs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
+import { extractSubsectionText, parseLegalProvisionReference } from "@/lib/legal-provision-reference";
 import {
   searchStatuteSections as searchStatuteSectionsSqlite,
   findRelatedAmendments as findRelatedAmendmentsSqlite,
@@ -54,6 +55,7 @@ const CODE_MAP: { re: RegExp; like: string }[] = [
   { re: /\b(crpc|cr\.?p\.?c)\b|criminal\s+procedure/i, like: "%Criminal Procedure%" },
   { re: /\b(cpc|c\.p\.c)\b|civil\s+procedure/i, like: "%Civil Procedure%" },
   { re: /\b(qso)\b|qanun-?e-?shahadat/i, like: "%Qanun-e-Shahadat%" },
+  { re: /\bpeca\b|prevention\s+of\s+electronic\s+crimes/i, like: "%Prevention of Electronic Crimes%" },
   { re: /\bconstitution\b|\barticle\b/i, like: "%Constitution of the Islamic%" },
 ];
 
@@ -74,8 +76,11 @@ const TOPIC_HINTS: { re: RegExp; like: string; kw: string }[] = [
 
 function excerptForSection(fullText: string, num: string, suffix: string): string | null {
   const numEsc = num.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const suffixPattern = suffix
+    ? `\\s*[-]?\\s*${suffix}(?![A-Z])`
+    : `(?!\\s*[-]?\\s*[A-Z])`;
   const re = new RegExp(
-    `(^|[\\s.])(?:\\d+\\[)?${numEsc}\\s*[-]?\\s*${suffix || "[A-Z]?"}\\.?[\\s\\u2014:.-]+[A-Z\\u201c"\\[]`,
+    `(^|[\\s.])(?:\\d+\\[)?${numEsc}${suffixPattern}\\.?[\\s\\u2014:.-]+[A-Z\\u201c"\\[]`,
     "g"
   );
   let best = -1;
@@ -123,13 +128,14 @@ function dedupeHits(hits: StatuteHit[], max: number): StatuteHit[] {
 async function preciseSectionHitsPg(question: string): Promise<StatuteHit[]> {
   const code = CODE_MAP.find((c) => c.re.test(question));
   if (!code) return [];
-  const match = question.match(/\b(\d{1,4})\s*[-]?\s*([A-Z])?\b/);
-  if (!match) return [];
+  const reference = parseLegalProvisionReference(question);
+  if (!reference) return [];
+  const provisionMatch = reference.provision.match(/^(\d{1,4})(?:-?([A-Z]{1,3}))?$/);
+  if (!provisionMatch) return [];
 
-  const num = match[1];
-  const suffix = match[2] || "";
+  const num = provisionMatch[1];
+  const suffix = provisionMatch[2] || "";
   const isConstitution = code.like.includes("Constitution");
-  const isQso = code.like.includes("Qanun-e-Shahadat");
 
   const rows = isConstitution
     ? await prisma.$queryRawUnsafe<any[]>(
@@ -155,8 +161,9 @@ async function preciseSectionHitsPg(question: string): Promise<StatuteHit[]> {
 
   const row = rows[0];
   if (!row) return [];
-  const body = excerptForSection(row.full_text || "", num, suffix);
-  if (!body) return [];
+  const sectionBody = excerptForSection(row.full_text || "", num, suffix);
+  if (!sectionBody) return [];
+  const body = extractSubsectionText(sectionBody, reference.subsections);
 
   return [
     {
@@ -165,7 +172,7 @@ async function preciseSectionHitsPg(question: string): Promise<StatuteHit[]> {
       province: row.province || "Federal",
       docType: row.doc_type || "act",
       year: row.act_year ?? null,
-      sectionNo: isConstitution || isQso ? `Article ${num}` : `${num}${suffix ? "-" + suffix : ""}`,
+      sectionNo: reference.canonical.replace(/^(?:Section|Article)\s+/i, ""),
       title: null,
       body,
     },

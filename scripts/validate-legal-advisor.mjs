@@ -150,6 +150,7 @@ assert.match(judgmentDbSource, /bm25\(judgments_fts\)/);
 const statuteSource = fs.readFileSync("src/lib/statute-retrieval.ts", "utf8");
 const statuteDbSource = fs.readFileSync("src/lib/statute-db.ts", "utf8");
 const statuteRuntimeSource = fs.readFileSync("src/lib/statute-db-runtime.ts", "utf8");
+const legalProvisionReferenceSource = fs.readFileSync("src/lib/legal-provision-reference.ts", "utf8");
 assert.match(statuteSource, /Article 164 QSO Qanun-e-Shahadat electronic evidence/);
 assert.match(statuteSource, /Motor Vehicles Ordinance registration transfer ownership/);
 assert.match(statuteSource, /Section 295-C PPC Pakistan Penal Code derogatory remarks/);
@@ -159,10 +160,10 @@ assert.match(statuteSource, /qanun\.\*shahadat\|qanoon\.\*shahadat/);
 assert.match(statuteSource, /preferred\.length \? preferred : ranked/);
 assert.match(statuteSource, /sectionNo\.startsWith\("Article "\)/);
 assert.match(statuteSource, /Quote statutory wording only when those exact words appear/);
+assert.match(legalProvisionReferenceSource, /lawCode === "QSO"/);
 for (const source of [statuteDbSource, statuteRuntimeSource]) {
   assert.match(source, /const isConstitution = code\.like\.includes\("Constitution"\)/);
-  assert.match(source, /const isQso = code\.like\.includes\("Qanun-e-Shahadat"\)/);
-  assert.match(source, /isConstitution \|\| isQso \? `Article \$\{num\}`/);
+  assert.match(source, /reference\.canonical\.replace\(\/\^\(\?:Section\|Article\)/);
   assert.ok(source.includes("(?:\\\\d+\\\\[)?"), "Footnote-marked provisions must be extractable");
   assert.match(source, /lastIndexOf\(hint\.kw\.toLowerCase\(\)\)/);
 }

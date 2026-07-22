@@ -791,6 +791,7 @@ export default function SmartDraftPage({
         body: JSON.stringify({
           action: "generate",
           userRequest: `Retype this document in clean professional typed format in English. Reproduce the SAME document exactly — same content, same structure, same names, numbers and legal text — but formatted as a proper typed legal document with correct HTML. Do not add, remove, or change any content. Document text extracted from image:\n\n${extractedText}`,
+          documentRequest: "Typed copy of supplied document",
           answers: {},
           language: "en",
           category,

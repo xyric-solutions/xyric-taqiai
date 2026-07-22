@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { searchStatuteSections } from "@/lib/statute-db-runtime";
+import { parseLegalProvisionReference } from "@/lib/legal-provision-reference";
 
 export const dynamic = "force-dynamic";
 
@@ -15,13 +16,18 @@ function searchTerms(query: string): string[] {
   const text = query.replace(/\s+/g, " ").trim();
   const terms: string[] = [];
 
+  const exactReference = parseLegalProvisionReference(text);
+  if (exactReference) {
+    terms.push(exactReference.canonical, exactReference.provision, ...exactReference.subsections);
+  }
+
   const sectionRef =
-    /\b\d{1,4}[-/]?[A-Z]{0,2}\s*(?:PPC|P\.P\.C|Cr\.?P\.?C\.?|C\.?P\.?C\.?|CrPC|CPC|QSO)\b/gi;
+    /\b\d{1,4}(?:[-/]?[A-Z]{0,2})?(?:\s*\([0-9A-Za-z]+\))*\s*(?:PPC|P\.P\.C|Cr\.?P\.?C\.?|C\.?P\.?C\.?|CrPC|CPC|QSO|PECA)\b/gi;
   for (const match of text.matchAll(sectionRef)) {
     terms.push(match[0].replace(/\s+/g, " ").trim());
   }
 
-  for (const match of text.matchAll(/\b\d{1,4}[-/]?[A-Z]?\b/g)) {
+  for (const match of text.matchAll(/\b\d{1,4}(?:[-/]?[A-Z]{0,2})?(?:\s*\([0-9A-Za-z]+\))*/g)) {
     terms.push(match[0]);
   }
 

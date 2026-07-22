@@ -32,6 +32,13 @@ const primaryRequest = resolvePrimaryDocumentRequest(
 assert.equal(primaryRequest, "Car Sale Agreement");
 assert.equal(findAgreementCatalogItem(primaryRequest)?.subType, "vehicle-sale");
 
+const longAgreementFacts = `Vehicle Sale Agreement\n\n${"Detailed vehicle facts and terms. ".repeat(80)}`;
+assert.equal(resolvePrimaryDocumentRequest(longAgreementFacts, longAgreementFacts), "Vehicle Sale Agreement");
+assert.equal(findAgreementCatalogItem(resolvePrimaryDocumentRequest(longAgreementFacts, longAgreementFacts))?.subType, "vehicle-sale");
+
+const longSingleParagraphRequest = `Legal Notice ${"detailed facts ".repeat(100)}`;
+assert.equal(resolvePrimaryDocumentRequest(undefined, longSingleParagraphRequest).length, 1000);
+
 const vehicleQuestions = [
   {
     id: "seller_name",
